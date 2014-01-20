@@ -1,0 +1,256 @@
+#!/usr/bin/python
+# vim: sw=2 et
+
+"""
+goal:
+  orq run squares_app.orq
+  orq run dnrim.orq
+
+  builds new docker image on dev machine.
+  push to registry on host over ssh tunnel.
+  start new container on host, redirect hipache, take down old container.
+
+  orq is a process monitor, container manger, and proxy configurer.
+  security all based on ssh tunnels.
+
+running container descriptions ("task"):
+  host to run on
+  task name (usually same as image name) (internal to orq, not docker container name)
+  image name
+  domain to forward to container
+  port container is listening on
+  volumes:
+    host path
+    container path
+    disposition (logs? data?)
+  environment variables
+  uid?
+
+  (serialized as json)
+
+
+host is running:
+
+  outside:
+    orq
+      bind to localhost port 4999
+
+  containers:
+    orq-managed: (need config for these built into orq)
+
+    hipache+redis
+      bind to public port 80
+    registry
+      bind to localhost port 5000
+
+    other:
+
+    event_logger
+    dnrim
+    squares_mongodb
+    squares_app
+
+
+orq daemon:
+  runs as root
+
+  endpoints:
+    run: task json
+    stop: task name
+
+  protocol:
+    accept socket connection
+    read json until end
+    write json back
+    close
+
+  state:
+    need to track:
+      container ids for various things
+      list of tasks that are expected to be running
+    serialization:
+      json file in /var/lib
+"""
+
+ORQ_PORT = 4999
+REG_PORT = 5000
+ORQ_ADDR = ('127.0.0.1', ORQ_PORT)
+STATE_FILE = '/var/lib/orq.state'
+CHECK_INTERVAL = 10
+
+import os, sys, json, socket, SocketServer, threading, subprocess, time
+
+
+def docker(argv):
+  argv[0:0] = ['docker']
+  return subprocess.check_output(argv)
+
+def inspect(cid, *keys):
+  data = json.loads(docker('inspect', cid))
+  data = data[0]
+  for k in keys:
+    data = data[k]
+  return data
+
+def image_in_registry(image):
+  return 'localhost:%d/%s' % (REG_PORT, image)
+
+def do_client(data):
+  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  s.connect(ORQ_ADDR)
+  s.sendall(json.dumps(data))
+  s.shutdown(socket.SHUT_WR)
+  return json.load(s.makefile('r'))
+
+def print_json(out):
+  json.dump(out, sys.stdout, sort_keys=True,
+      indent=4, separators=(',', ': '))
+  print
+
+
+class ServerState(object):
+  def __enter__(self):
+    try:
+      self.data = json.load(open(STATE_FILE, 'r'))
+    except IOError:
+      self.data = {}
+    return self
+
+  def __exit__(self):
+    json.dump(self.data, open(STATE_FILE + '.tmp', 'w'))
+    os.rename(STATE_FILE + '.tmp', STATE_FILE)
+
+  def get_cid(self, image):
+    if 'cids' not in self.data: self.data['cids'] = {}
+    return self.data['cids'].get(image)
+
+  def set_cid(self, image, cid):
+    if 'cids' not in self.data: self.data['cids'] = {}
+    self.data['cids'][image] = cid
+
+
+class ServerHandler(SocketServer.StreamRequestHandler):
+  def handle(self):
+    try:
+      data = json.load(self.rfile)
+      result = getattr(self, 'op_' + data['op'])(data)
+      out = {'success': True, 'result': result}
+    except:
+      out = {'success': False}
+    json.dump(out, self.wfile)
+
+  @staticmethod
+  def construct_docker_args(task):
+    return []
+
+  @staticmethod
+  def set_hipache_backend(FIXME):
+    pass
+
+  def op_check_running(self, data):
+    pass
+
+  def op_run(self, data):
+    task = data['task']
+    with ServerState() as st:
+      old_cid = st.get_cid(task['image'])
+
+      # run new thing
+      args = self.construct_docker_args(task)
+      new_cid = docker('run', *args)
+
+      time.sleep(1)
+
+      # move hipache backend
+      self.set_hipache_backend(FIXME)
+
+      time.sleep(1)
+
+      # take down old thing
+      docker('kill', old_cid)
+      st.set_cid(task['image'], new_cid)
+
+  def op_stop(self, data):
+    task = data['task']
+    with ServerState() as st:
+      cid = st.get_cid(task['image'])
+      self.set_hipache_backend(FIXME)
+      docker('kill', cid)
+      st.set_cid(task['image'], None)
+
+  def op_cleanup(self, data):
+    subprocess.call('''
+      # delete all non-running container
+      docker ps -a | awk '/Exit/ {print $1}' | xargs -r docker rm
+      # delete unused images
+      docker images | awk '/<none>/ {print $3}' | xargs -r docker rmi
+    ''', shell=True)
+
+
+class SshTunnel(object):
+  def __init__(self, host):
+    self.host = host
+
+  def __enter__(self):
+    args = [
+        'ssh',
+        self.host,
+        '-L', 'localhost:%d:127.0.0.1:%d' % (ORQ_PORT, ORQ_PORT),
+        '-L', 'localhost:%d:127.0.0.1:%d' % (REG_PORT, REG_PORT),
+        'sleep 1d',
+        ]
+    self.proc = subprocess.Popen(args,
+        close_fds=True,
+        stdin=open('/dev/null', 'r'),
+        stdout=open('/dev/null', 'w'),
+        stderr=open('/dev/null', 'w'))
+
+  def __exit__(self, t, v, t2):
+    self.proc.terminate()
+
+
+class Cli(object):
+  def handle(self, argv):
+    return getattr(self, 'cmd_' + argv[0])(argv[1:])
+
+  @staticmethod
+  def load_taskfile(taskfile):
+    return json.load(open(taskfile, 'r'))
+
+  def cmd_daemon(self, argv):
+    def send_check_requests():
+      while True:
+        time.sleep(CHECK_INTERVAL)
+        try: do_client({'op': 'check_running'})
+        except: pass
+    scr = threading.Thread(target=send_check_requests)
+    scr.setDaemon(True)
+    scr.start()
+    SocketServer.TCPServer(ORQ_ADDR, ServerHandler).serve_forever()
+
+  def cmd_run(self, argv):
+    task = self.load_taskfile(argv[0])
+    dockerfiledir = os.path.dirname(argv[0]) or '.'
+    host = task['host']
+    image = task['image']
+    with SshTunnel(host):
+      docker('build', '-t', image_in_registry(image), dockerfiledir)
+      docker('push', image_in_registry(image))
+      print_json(do_client({'op': 'run', 'task': task}))
+
+  def cmd_stop(self, argv):
+    task = self.load_taskfile(argv[0])
+    host = task['host']
+    with SshTunnel(host):
+      print_json(do_client({'op': 'stop', 'task': task}))
+
+  def cmd_cleanup(self, argv):
+    with SshTunnel(argv[0]):
+      print_json(do_client({'op': 'cleanup'}))
+
+
+def main(argv):
+  return Cli().handle(argv[1:])
+
+if __name__ == '__main__':
+  sys.exit(main(sys.argv))
