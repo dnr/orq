@@ -74,12 +74,44 @@ orq daemon:
 
 ORQ_PORT = 4999
 REG_PORT = 5000
-ORQ_ADDR = ('127.0.0.1', ORQ_PORT)
-STATE_FILE = '/var/lib/orq.state'
+LOCALHOST = '127.0.0.1'
+ORQ_ADDR = (LOCALHOST, ORQ_PORT)
+ORQ_ROOT = '/var/lib/orq'
 CHECK_INTERVAL = 10
 
-import os, sys, json, socket, SocketServer, threading, subprocess, time
+HIPACHE_TASK_NAME = '__hipache__'
+HIPACHE_TASK = {
+    'name': HIPACHE_TASK_NAME,
+    'image': 'orq_hipache',
+    'volumes': [
+      {'id': 'hipache_logs', 'container': '/var/log/hipache'}
+      ],
+    'exposed_ports': [
+      {'host': 80, 'container': 8000, 'public': True},
+      ],
+    }
 
+REGISTRY_TASK_NAME = '__registry__'
+REGISTRY_TASK = {
+    'name': REGISTRY_TASK_NAME,
+    'image': 'stackbrew/registry',
+    'volumes': [
+      {'id': 'docker_registry_data', 'container': '/tmp/registry'}
+      ],
+    'exposed_ports': [
+      {'host': REG_PORT, 'private': REG_PORT},
+      ],
+    }
+
+import os, sys, json, socket, SocketServer, threading, subprocess, time
+join = os.path.join
+
+STATE_FILE = join(ORQ_ROOT, 'state')
+VOL_ROOT = join(ORQ_ROOT, 'volumes')
+
+
+def volume_path(vid):
+  return join(VOL_ROOT, vid)
 
 def docker(argv):
   argv[0:0] = ['docker']
@@ -92,8 +124,14 @@ def inspect(cid, *keys):
     data = data[k]
   return data
 
+def ipaddr_of(cid):
+  return inspect(cid, 'NetworkSettings', 'IPAddress')
+
 def image_in_registry(image):
-  return 'localhost:%d/%s' % (REG_PORT, image)
+  if '/' in image:
+    return image
+  else:
+    return 'localhost:%d/%s' % (REG_PORT, image)
 
 def do_client(data):
   s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -106,6 +144,13 @@ def print_json(out):
   json.dump(out, sys.stdout, sort_keys=True,
       indent=4, separators=(',', ': '))
   print
+
+def get_public_ip(cache=[]):
+  if not cache:
+    cmd = r"ifconfig eth0 | sed -ne 's/.* inet addr:\([0-9.]*\).*/\1/p'"
+    output = subprocess.check_output(cmd, shell=True)
+    cache.append(output)
+  return cache[0]
 
 
 class ServerState(object):
@@ -141,42 +186,102 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
   @staticmethod
   def construct_docker_args(task):
-    return []
+    args = []
+
+    args.append('-d')
+
+    for vol in task.get('volumes', []):
+      args.append('-v')
+      host = volume_path(vol['id'])
+      args.append('%s:%s' % (host, vol['container']))
+
+    for port in task.get('exposed_ports', []):
+      host = port['host']
+      container = port['container']
+      if port.get('public'):
+        expose_ip = get_public_ip()
+      else:
+        expose_ip = LOCALHOST
+      args.append('-p')
+      args.append('%s:%s:%s', expose_ip, host, container)
+
+    for k, v in task.get('env', {}).items():
+      args.append('-e')
+      args.append('%s=%s' % (k, v))
+
+    args.append(task['image'])
+
+    args.extend(task.get('argv', []))
+
+    return args
 
   @staticmethod
-  def set_hipache_backend(FIXME):
-    pass
+  def ensure_host_volumes(task):
+    for vol in task.get('volumes', []):
+      path = volume_path(vol['vid'])
+      if not os.path.isdir(path):
+        os.makedirs(path)
+        os.chown(path, vol['uid'], vol['gid'])
+        os.chmod(path, vol['mode'])
+
+  @staticmethod
+  def set_hipache_backend(st, domain, ip, port):
+    hipache_ip = ipaddr_of(st.get_cid(HIPACHE_TASK_NAME))
+    r = redis.StrictRedis(hipache_ip)
+
+    endpoint = 'http://%s:%d' % (ip, port)
+    key = 'frontend:%s' % domain
+
+    # TODO: simplify and wrap in a transaction
+    existing_keys = r.llen(key)
+    if existing_keys == 0:
+      r.rpush(key, domain)
+    r.linsert(key, 'after', domain, endpoint)
+    while r.llen(key) > 2:
+      r.rpop(key)
+
+  @staticmethod
+  def clear_hipache_backend(st, domain, ip, port):
+    hipache_ip = ipaddr_of(st.get_cid(HIPACHE_TASK_NAME))
+    r = redis.StrictRedis(hipache_ip)
+    r.delete('frontend:%s' % domain)
 
   def op_check_running(self, data):
     pass
 
   def op_run(self, data):
     task = data['task']
+    self.ensure_host_volumes(task)
     with ServerState() as st:
-      old_cid = st.get_cid(task['image'])
+      old_cid = st.get_cid(task['name'])
 
       # run new thing
       args = self.construct_docker_args(task)
       new_cid = docker('run', *args)
 
-      time.sleep(1)
+      time.sleep(task.get('up_wait_time', 1))
 
       # move hipache backend
-      self.set_hipache_backend(FIXME)
+      domain = task.get('domain')
+      port = task.get('http_port')
+      if domain and port:
+        ip = ipaddr_of(new_cid)
+        self.set_hipache_backend(st, domain, ip, port)
 
-      time.sleep(1)
+      time.sleep(task.get('down_wait_time', 1))
 
       # take down old thing
       docker('kill', old_cid)
-      st.set_cid(task['image'], new_cid)
+      st.set_cid(task['name'], new_cid)
 
   def op_stop(self, data):
     task = data['task']
     with ServerState() as st:
-      cid = st.get_cid(task['image'])
-      self.set_hipache_backend(FIXME)
+      cid = st.get_cid(task['name'])
+      if 'domain' in task:
+        self.clear_hipache_backend(task['domain'])
       docker('kill', cid)
-      st.set_cid(task['image'], None)
+      st.set_cid(task['name'], None)
 
   def op_cleanup(self, data):
     subprocess.call('''
@@ -218,6 +323,11 @@ class Cli(object):
     return json.load(open(taskfile, 'r'))
 
   def cmd_daemon(self, argv):
+    os.umask(077)
+    for d in ORQ_ROOT, VOL_ROOT:
+      os.makedirs(d)
+    os.chdir(ORQ_ROOT)
+
     def send_check_requests():
       while True:
         time.sleep(CHECK_INTERVAL)
@@ -226,6 +336,7 @@ class Cli(object):
     scr = threading.Thread(target=send_check_requests)
     scr.setDaemon(True)
     scr.start()
+
     SocketServer.TCPServer(ORQ_ADDR, ServerHandler).serve_forever()
 
   def cmd_run(self, argv):
