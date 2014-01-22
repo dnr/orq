@@ -1,0 +1,13 @@
+{
+    "server": {
+        "accessLog": "/var/log/hipache/access.log",
+        "port": 8000,
+        "workers": 5,
+        "maxSockets": 1000,
+        "deadBackendTTL": 30,
+        "tcpTimeout": 30,
+        "retryOnError": 3,
+        "deadBackendOn500": true,
+        "httpKeepAlive": false
+    }
+}
