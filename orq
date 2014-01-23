@@ -97,6 +97,7 @@ HIPACHE_IMAGE_NAME = 'orq_hipache'
 HIPACHE_TASK = {
     'name': HIPACHE_TASK_NAME,
     'image': HIPACHE_IMAGE_NAME,
+    'raw_image_name': True,
     'volumes': [
       {'id': 'hipache_logs', 'container': '/var/log/hipache',
         'uid': 1000, 'gid': 0, 'mode': 0755}
@@ -110,6 +111,7 @@ REGISTRY_TASK_NAME = '__registry__'
 REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
     'image': 'stackbrew/registry',
+    'raw_image_name': True,
     'volumes': [
       {'id': 'docker_registry_data', 'container': '/tmp/registry',
         'uid': 0, 'gid': 0, 'mode': 0755}
@@ -246,7 +248,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       args.append('-e')
       args.append('%s=%s' % (k, v))
 
-    args.append(image_in_registry(task['image']))
+    if task.get('raw_image_name'):
+      args.append(task['image'])
+    else:
+      args.append(image_in_registry(task['image']))
 
     args.extend(task.get('argv', []))
 
@@ -295,8 +300,11 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     with ServerState() as st:
       for task in st.data['tasks']:
         cid = task['cid']
-        if cid and inspect(cid, 'State', 'Running'):
-          continue
+        try:
+          if cid and inspect(cid, 'State', 'Running'):
+            continue
+        except subprocess.CalledProcessError:
+          pass
         self.run_task(st, task['task'])
         st.save()
 
