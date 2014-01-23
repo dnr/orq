@@ -73,6 +73,7 @@ orq daemon:
 """
 
 import os, sys, json, socket, SocketServer, threading, subprocess, time
+import redis
 join = os.path.join
 
 IS_ROOT = os.getuid() == 0
@@ -245,7 +246,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       args.append('-e')
       args.append('%s=%s' % (k, v))
 
-    args.append(task['image'])
+    args.append(image_in_registry(task['image']))
 
     args.extend(task.get('argv', []))
 
@@ -265,9 +266,14 @@ class ServerHandler(SocketServer.StreamRequestHandler):
           os.chmod(path, 01777)
 
   @staticmethod
+  def hipache_redis(st):
+    hipache_cid = st.find_tdata_by_name(HIPACHE_TASK_NAME)['cid']
+    hipache_ip = ipaddr_of(hipache_cid)
+    return redis.StrictRedis(hipache_ip)
+
+  @staticmethod
   def set_hipache_backend(st, domain, ip, port):
-    hipache_ip = ipaddr_of(st.get_cid(HIPACHE_TASK_NAME))
-    r = redis.StrictRedis(hipache_ip)
+    r = ServerHandler.hipache_redis(st)
 
     endpoint = 'http://%s:%d' % (ip, port)
     key = 'frontend:%s' % domain
@@ -281,9 +287,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       r.rpop(key)
 
   @staticmethod
-  def clear_hipache_backend(st, domain, ip, port):
-    hipache_ip = ipaddr_of(st.get_cid(HIPACHE_TASK_NAME))
-    r = redis.StrictRedis(hipache_ip)
+  def clear_hipache_backend(st, domain):
+    r = ServerHandler.hipache_redis(st)
     r.delete('frontend:%s' % domain)
 
   def op_check_running(self, data):
@@ -321,7 +326,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     # take down old thing
     if old_cid:
       time.sleep(task.get('down_wait_time', 1))
-      docker('kill', old_cid)
+      docker('stop', old_cid)
 
   def op_run(self, data):
     task = data['task']
@@ -336,9 +341,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         task = tdata['task']
         cid = tdata['cid']
         if 'domain' in task:
-          self.clear_hipache_backend(task['domain'])
+          self.clear_hipache_backend(st, task['domain'])
         if cid:
-          docker('kill', cid)
+          docker('stop', cid)
         st.data['tasks'].remove(tdata)
 
   def op_cleanup(self, data):
