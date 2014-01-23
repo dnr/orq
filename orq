@@ -75,9 +75,11 @@ orq daemon:
 import os, sys, json, socket, SocketServer, threading, subprocess, time
 join = os.path.join
 
+IS_ROOT = os.getuid() == 0
+
 ORQ_PORT = 4999
 REG_PORT = 5000
-if os.getuid() == 0:
+if IS_ROOT:
   PUBLIC_PORT = 80
   ORQ_ROOT = '/var/lib/orq'
 else:
@@ -87,7 +89,7 @@ STATE_FILE = join(ORQ_ROOT, 'state')
 VOL_ROOT = join(ORQ_ROOT, 'volumes')
 LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
-CHECK_INTERVAL = 5#10  FIXME
+CHECK_INTERVAL = 10
 
 HIPACHE_TASK_NAME = '__hipache__'
 HIPACHE_IMAGE_NAME = 'orq_hipache'
@@ -112,7 +114,7 @@ REGISTRY_TASK = {
         'uid': 0, 'gid': 0, 'mode': 0755}
       ],
     'exposed_ports': [
-      {'host': REG_PORT, 'private': REG_PORT},
+      {'host': REG_PORT, 'container': REG_PORT},
       ],
     }
 
@@ -255,8 +257,12 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       path = volume_path(vol['id'])
       if not os.path.isdir(path):
         os.makedirs(path)
-        os.chown(path, vol['uid'], vol['gid'])
-        os.chmod(path, vol['mode'])
+        if IS_ROOT:
+          os.chown(path, vol['uid'], vol['gid'])
+          os.chmod(path, vol['mode'])
+        else:
+          # TODO: ehhhh
+          os.chmod(path, 01777)
 
   @staticmethod
   def set_hipache_backend(st, domain, ip, port):
@@ -301,7 +307,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     # run new thing
     args = self.construct_docker_args(task)
-    new_cid = tdata['cid'] = docker('run', *args)
+    new_cid = tdata['cid'] = docker('run', *args).strip()
 
     time.sleep(task.get('up_wait_time', 1))
 
@@ -345,8 +351,11 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
 def run_daemon():
   # build hipache image
-  hipache_dockerdir_path = join(os.path.dirname(__file__), 'hipache')
-  docker('build', '-rm', '-t', HIPACHE_IMAGE_NAME, hipache_dockerdir_path)
+  try:
+    inspect(HIPACHE_IMAGE_NAME, 'container_config')
+  except ValueError:
+    hipache_dockerdir_path = join(os.path.dirname(__file__), 'hipache')
+    docker('build', '-rm', '-t', HIPACHE_IMAGE_NAME, hipache_dockerdir_path)
 
   # set up for daemon
   os.umask(077)
