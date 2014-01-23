@@ -2,9 +2,8 @@
 # vim: sw=2 et
 
 """
-goal:
-  orq run squares_app.orq
-  orq run dnrim.orq
+usage:
+  orq run my_app.orq
 
   builds new docker image on dev machine.
   push to registry on host over ssh tunnel.
@@ -13,69 +12,36 @@ goal:
   orq is a process monitor, container manger, and proxy configurer.
   security all based on ssh tunnels.
 
-running container descriptions ("task"):
-  host to run on
-  task name (usually same as image name) (internal to orq, not docker container name)
-  image name
-  domain to forward to container
-  port container is listening on
-  volumes:
-    host path
-    container path
-    disposition (logs? data?)
-  environment variables
-  uid?
+task json schema:
 
-  (serialized as json)
+  basics:
+  {
+    "name": "my_app",
+    "image": "my_app",
+    "domain": "myapp.com",
+    "http_port": 3000,
+    "host": "box-1.myapp.com",
+  }
 
+  other allowed keys:
 
-host is running:
+    "volumes": [
+      {"id": "app_logs", "container": "/app/logs",
+        "uid": 1000, "gid": 0, "mode": 0755}
+      ],
 
-  outside:
-    orq
-      bind to localhost port 4999
+    note that volumes are placed in /var/lib/orq/volumes/<id>
 
-  containers:
-    orq-managed: (need config for these built into orq)
+  for internal use only:
 
-    hipache+redis
-      bind to public port 80
-    registry
-      bind to localhost port 5000
+    "raw_image_name": True,
+    "exposed_ports": [{"host": 5000, "container": 5000, "public": ...}],
 
-    other:
-
-    event_logger
-    dnrim
-    squares_mongodb
-    squares_app
-
-
-orq daemon:
-  runs as root
-
-  endpoints:
-    run: task json
-    stop: task name
-
-  protocol:
-    accept socket connection
-    read json until end
-    write json back
-    close
-
-  state:
-    need to track:
-      container ids for various things
-      list of tasks that are expected to be running
-    serialization:
-      json file in /var/lib
 """
 
 import os, sys, json, socket, SocketServer, threading, subprocess, time
 import tempfile, shutil
 import redis
-join = os.path.join
 
 IS_ROOT = os.getuid() == 0
 
@@ -87,8 +53,8 @@ if IS_ROOT:
 else:
   PUBLIC_PORT = 8000
   ORQ_ROOT = '/tmp/orq'
-STATE_FILE = join(ORQ_ROOT, 'state')
-VOL_ROOT = join(ORQ_ROOT, 'volumes')
+STATE_FILE = os.path.join(ORQ_ROOT, 'state')
+VOL_ROOT = os.path.join(ORQ_ROOT, 'volumes')
 LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
 CHECK_INTERVAL = 10
@@ -226,7 +192,7 @@ autorestart=true
 
 
 def volume_path(vid):
-  return join(VOL_ROOT, vid)
+  return os.path.join(VOL_ROOT, vid)
 
 def docker(*argv):
   argv = list(argv)
@@ -556,8 +522,5 @@ class Cli(object):
       print_json(do_client({'op': 'cleanup'}))
 
 
-def main(argv):
-  return Cli().handle(argv[1:])
-
 if __name__ == '__main__':
-  sys.exit(main(sys.argv))
+  sys.exit(Cli().handle(sys.argv[1:]))
