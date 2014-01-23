@@ -73,6 +73,7 @@ orq daemon:
 """
 
 import os, sys, json, socket, SocketServer, threading, subprocess, time
+import tempfile, shutil
 import redis
 join = os.path.join
 
@@ -120,6 +121,108 @@ REGISTRY_TASK = {
       {'host': REG_PORT, 'container': REG_PORT},
       ],
     }
+
+HIPACHE_IMAGE_SOURCES = {
+
+'Dockerfile': r'''\
+FROM stackbrew/ubuntu:raring
+
+# From https://gist.github.com/jpetazzo/6127116:
+RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/02apt-speedup
+RUN echo "Acquire::http {No-Cache=True;};" > /etc/apt/apt.conf.d/no-cache
+
+RUN apt-get -yq update
+RUN apt-get -yq upgrade
+RUN apt-get -yq install wget git python2.7-minimal redis-server supervisor
+RUN apt-get -yq clean
+RUN ln -sf python2.7 /usr/bin/python
+RUN useradd -U -M -u 1000 hipache
+
+RUN wget -qO- http://nodejs.org/dist/v0.8.26/node-v0.8.26-linux-x64.tar.gz | tar -C /usr/local/ --strip-components=1 -zx
+RUN npm install -g hipache
+RUN mkdir -p /etc/hipache
+ADD ./supervisord.conf /etc/supervisor/supervisord.conf
+ADD ./config.json /etc/hipache/config.json
+ADD ./redis.conf /etc/redis/redis.conf
+USER hipache
+EXPOSE 8000
+VOLUME ["/var/log/hipache"]
+CMD ["supervisord", "-n"]
+''',
+
+'config.json': r'''\
+{
+  "server": {
+    "accessLog": "/var/log/hipache/access.log",
+    "port": 8000,
+    "workers": 5,
+    "maxSockets": 1000,
+    "deadBackendTTL": 30,
+    "tcpTimeout": 30,
+    "retryOnError": 3,
+    "deadBackendOn500": true,
+    "httpKeepAlive": false
+  }
+}
+''',
+
+'redis.conf': r'''\
+daemonize no
+port 6379
+# unixsocket /var/run/redis/redis.sock
+# unixsocketperm 755
+timeout 0
+loglevel notice
+logfile /var/log/hipache/redis.log
+databases 1
+#save 900 1
+#save 300 10
+#save 60 10000
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+dbfilename dump.rdb
+dir /tmp
+slave-serve-stale-data yes
+slave-read-only yes
+slave-priority 100
+appendonly no
+no-appendfsync-on-rewrite yes
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+lua-time-limit 5000
+slowlog-log-slower-than 10000
+slowlog-max-len 128
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+list-max-ziplist-entries 512
+list-max-ziplist-value 64
+set-max-intset-entries 512
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+activerehashing yes
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit slave 256mb 64mb 60
+client-output-buffer-limit pubsub 32mb 8mb 60
+''',
+
+'supervisord.conf': r'''\
+[supervisord]
+nodaemon=true
+logfile=/var/log/hipache/supervisord.log
+pidfile=/tmp/supervisord.pid
+childlogdir=/var/log/hipache
+
+[program:hipache]
+command=/usr/local/bin/hipache -c /etc/hipache/config.json
+autorestart=true
+
+[program:redis]
+command=/usr/bin/redis-server /etc/redis/redis.conf
+autorestart=true
+''',
+
+}
 
 
 def volume_path(vid):
@@ -362,13 +465,23 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       docker images | awk '/<none>/ {print $3}' | xargs -r docker rmi
     ''', shell=True)
 
+
+def build_hipache():
+  tmpdir = tempfile.mkdtemp()
+  os.chdir(tmpdir)
+  for k, v in HIPACHE_IMAGE_SOURCES.items():
+    open(k, 'w').write(v)
+  docker('build', '-rm', '-t', HIPACHE_IMAGE_NAME, '.')
+  os.chdir('/')
+  shutil.rmtree(tmpdir)
+
+
 def run_daemon():
   # build hipache image
   try:
     inspect(HIPACHE_IMAGE_NAME, 'container_config')
-  except ValueError:
-    hipache_dockerdir_path = join(os.path.dirname(__file__), 'hipache')
-    docker('build', '-rm', '-t', HIPACHE_IMAGE_NAME, hipache_dockerdir_path)
+  except (ValueError, subprocess.CalledProcessError):
+    build_hipache()
 
   # set up for daemon
   os.umask(077)
