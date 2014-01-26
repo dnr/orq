@@ -90,7 +90,7 @@ REGISTRY_TASK = {
 
 HIPACHE_IMAGE_SOURCES = {
 
-'Dockerfile': r'''\
+'Dockerfile': r'''
 FROM stackbrew/ubuntu:raring
 
 # From https://gist.github.com/jpetazzo/6127116:
@@ -116,7 +116,7 @@ VOLUME ["/var/log/hipache"]
 CMD ["supervisord", "-n"]
 ''',
 
-'config.json': r'''\
+'config.json': r'''
 {
   "server": {
     "accessLog": "/var/log/hipache/access.log",
@@ -132,7 +132,7 @@ CMD ["supervisord", "-n"]
 }
 ''',
 
-'redis.conf': r'''\
+'redis.conf': r'''
 daemonize no
 port 6379
 # unixsocket /var/run/redis/redis.sock
@@ -172,7 +172,7 @@ client-output-buffer-limit slave 256mb 64mb 60
 client-output-buffer-limit pubsub 32mb 8mb 60
 ''',
 
-'supervisord.conf': r'''\
+'supervisord.conf': r'''
 [supervisord]
 nodaemon=true
 logfile=/var/log/hipache/supervisord.log
