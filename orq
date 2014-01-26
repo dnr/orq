@@ -17,7 +17,7 @@ task json schema:
   basics:
   {
     "name": "my_app",
-    "image": "my_app",
+    "dockerdir": ".",
     "domain": "myapp.com",
     "http_port": 3000,
     "host": "box-1.myapp.com",
@@ -63,11 +63,10 @@ HIPACHE_TASK_NAME = '__hipache__'
 HIPACHE_IMAGE_NAME = 'orq_hipache'
 HIPACHE_TASK = {
     'name': HIPACHE_TASK_NAME,
-    'image': HIPACHE_IMAGE_NAME,
-    'raw_image_name': True,
+    'raw_image_name': HIPACHE_IMAGE_NAME,
     'volumes': [
       {'id': 'hipache_logs', 'container': '/var/log/hipache',
-        'uid': 1000, 'gid': 0, 'mode': 0755}
+        'uid': 1000, 'gid': 0, 'mode': '0755'}
       ],
     'exposed_ports': [
       {'host': PUBLIC_PORT, 'container': 8000, 'public': True},
@@ -77,11 +76,10 @@ HIPACHE_TASK = {
 REGISTRY_TASK_NAME = '__registry__'
 REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
-    'image': 'stackbrew/registry',
-    'raw_image_name': True,
+    'raw_image_name': 'stackbrew/registry',
     'volumes': [
       {'id': 'docker_registry_data', 'container': '/tmp/registry',
-        'uid': 0, 'gid': 0, 'mode': 0755}
+        'uid': 0, 'gid': 0, 'mode': '0755'}
       ],
     'exposed_ports': [
       {'host': REG_PORT, 'container': REG_PORT},
@@ -318,9 +316,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       args.append('%s=%s' % (k, v))
 
     if task.get('raw_image_name'):
-      args.append(task['image'])
+      args.append(task['raw_image_name'])
     else:
-      args.append(image_in_registry(task['image']))
+      args.append(image_in_registry(task['name']))
 
     args.extend(task.get('argv', []))
 
@@ -334,7 +332,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         os.makedirs(path)
         if IS_ROOT:
           os.chown(path, vol['uid'], vol['gid'])
-          os.chmod(path, vol['mode'])
+          os.chmod(path, int(vol['mode'], 8))
         else:
           # TODO: ehhhh
           os.chmod(path, 01777)
@@ -404,6 +402,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     if old_cid:
       time.sleep(task.get('down_wait_time', 1))
       docker('stop', old_cid)
+
+  def op_ping(self, data):
+    return None
 
   def op_run(self, data):
     task = data['task']
@@ -483,11 +484,17 @@ class SshTunnel(object):
     self.proc = subprocess.Popen(args,
         close_fds=True,
         stdin=open('/dev/null', 'r'),
-        stdout=open('/dev/null', 'w'),
-        stderr=open('/dev/null', 'w'))
+        stdout=open('/dev/null', 'w'))
+    while True:
+      try:
+        do_client({'op': 'ping'})
+        break
+      except socket.error:
+        time.sleep(1)
 
   def __exit__(self, t, v, t2):
     self.proc.terminate()
+    self.proc.wait()
 
 
 class Cli(object):
@@ -502,20 +509,23 @@ class Cli(object):
     run_daemon()
 
   def cmd_run(self, argv):
-    task = self.load_taskfile(argv[0])
-    dockerfiledir = os.path.dirname(argv[0]) or '.'
-    host = task['host']
-    image = task['image']
-    with SshTunnel(host):
-      docker('build', '-t', image_in_registry(image), dockerfiledir)
-      docker('push', image_in_registry(image))
-      print_json(do_client({'op': 'run', 'task': task}))
+    tasks = self.load_taskfile(argv[0])
+    # TODO: group by host so we don't do extra ssh work
+    for task in tasks:
+      dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
+      host = task['host']
+      image = image_in_registry(task['name'])
+      with SshTunnel(host):
+        docker('build', '-t', image, dockerdir)
+        docker('push', image)
+        print_json(do_client({'op': 'run', 'task': task}))
 
   def cmd_stop(self, argv):
-    task = self.load_taskfile(argv[0])
-    host = task['host']
-    with SshTunnel(host):
-      print_json(do_client({'op': 'stop', 'task': task}))
+    tasks = self.load_taskfile(argv[0])
+    for task in tasks:
+      host = task['host']
+      with SshTunnel(host):
+        print_json(do_client({'op': 'stop', 'task': task}))
 
   def cmd_cleanup(self, argv):
     with SshTunnel(argv[0]):
