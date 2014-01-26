@@ -1,0 +1,4 @@
+#!/bin/sh
+host=$1
+scp orq root@$host:/root/orq
+scp orq-upstart.conf root@$host:/etc/init/orq.conf
