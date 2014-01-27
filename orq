@@ -185,6 +185,8 @@ autorestart=true
 
 }
 
+class DockerError(Exception): pass
+class InspectError(DockerError): pass
 
 def volume_path(vid):
   return os.path.join(VOL_ROOT, vid)
@@ -193,14 +195,20 @@ def docker(*argv):
   argv = list(argv)
   argv[0:0] = ['docker']
   print '+', ' '.join(argv)
-  return subprocess.check_output(argv)
+  try:
+    return subprocess.check_output(argv)
+  except subprocess.CalledProcessError:
+    raise DockerError
 
 def inspect(thing, *keys):
-  data = json.loads(docker('inspect', thing))
-  data = data[0]
-  for k in keys:
-    data = data[k]
-  return data
+  try:
+    data = json.loads(docker('inspect', thing))
+    data = data[0]
+    for k in keys:
+      data = data[k]
+    return data
+  except (DockerError, IndexError, KeyError, TypeError):
+    raise InspectError
 
 def ipaddr_of(cid):
   return inspect(cid, 'NetworkSettings', 'IPAddress')
@@ -288,6 +296,13 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       raise  # FIXME
 
   @staticmethod
+  def get_image_name(task):
+    if task.get('raw_image_name'):
+      return task['raw_image_name']
+    else:
+      return image_in_registry(task['name'])
+
+  @staticmethod
   def construct_docker_args(task):
     args = []
 
@@ -312,10 +327,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       args.append('-e')
       args.append('%s=%s' % (k, v))
 
-    if task.get('raw_image_name'):
-      args.append(task['raw_image_name'])
-    else:
-      args.append(image_in_registry(task['name']))
+    args.append(ServerHandler.get_image_name(task))
 
     args.extend(task.get('argv', []))
 
@@ -362,7 +374,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         try:
           if cid and inspect(cid, 'State', 'Running'):
             continue
-        except subprocess.CalledProcessError:
+        except InspectError:
           pass
         self.run_task(st, task['task'])
         st.save()
@@ -376,6 +388,16 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       tdata = st.add_task(task)
     tdata['task'] = task
     old_cid = tdata['old_cid'] = tdata['cid']
+
+    # check if the container is already running the new image
+    try:
+      if old_cid:
+        running_image = inspect(old_cid, 'Image')
+        new_image = inspect(self.get_image_name(task), 'id')
+        if running_image == new_image:
+          return
+    except InspectError:
+      pass
 
     # run new thing
     args = self.construct_docker_args(task)
@@ -438,8 +460,8 @@ def build_hipache():
 def run_daemon():
   # build hipache image
   try:
-    inspect(HIPACHE_IMAGE_NAME, 'container_config')
-  except (ValueError, subprocess.CalledProcessError):
+    inspect(HIPACHE_IMAGE_NAME, 'config')
+  except InspectError:
     build_hipache()
 
   # set up for daemon

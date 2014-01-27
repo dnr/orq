@@ -1,4 +1,5 @@
 #!/bin/sh
-host=$1
-scp orq root@$host:/root/orq
-scp orq-upstart.conf root@$host:/etc/init/orq.conf
+host=root@$1
+ssh $host apt-get install python-redis
+scp orq $host:/root/orq
+scp orq-upstart.conf $host:/etc/init/orq.conf
