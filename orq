@@ -28,6 +28,9 @@ task json schema:
     "volumes": [
       {"id": "app_logs", "container": "/app/logs"}
       ],
+    "env": {
+      "KEY": "value",
+    },
 
     note that volumes are placed in /var/lib/orq/volumes/<id>
 
@@ -76,7 +79,11 @@ HIPACHE_TASK = {
 REGISTRY_TASK_NAME = '__registry__'
 REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
-    'raw_image_name': 'stackbrew/registry',
+    'raw_image_name': 'registry',
+    'env': {
+      'GUNICORN_WORKERS': 2,
+      'REGISTRY_PORT': REG_PORT,
+      },
     'volumes': [
       {'id': 'docker_registry_data', 'container': '/tmp/registry'}
       ],
