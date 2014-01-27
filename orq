@@ -35,6 +35,7 @@ task json schema:
 
     "raw_image_name": "something/else",
     "exposed_ports": [{"host": 5000, "container": 5000, "public": ...}],
+    "stop_old_first": ...,
 
 """
 
@@ -69,6 +70,7 @@ HIPACHE_TASK = {
     'exposed_ports': [
       {'host': PUBLIC_PORT, 'container': 8000, 'public': True},
       ],
+    'stop_old_first': True,
     }
 
 REGISTRY_TASK_NAME = '__registry__'
@@ -81,6 +83,7 @@ REGISTRY_TASK = {
     'exposed_ports': [
       {'host': REG_PORT, 'container': REG_PORT},
       ],
+    'stop_old_first': True,
     }
 
 HIPACHE_IMAGE_SOURCES = {
@@ -380,6 +383,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         st.save()
 
   def run_task(self, st, task):
+    stop_old_first = task.get('stop_old_first', False)
+
     self.ensure_host_volumes(task)
 
     # add to state and get old cid
@@ -399,6 +404,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     except InspectError:
       pass
 
+    # take down old thing (if before)
+    if stop_old_first and old_cid:
+      docker('stop', old_cid)
+
     # run new thing
     args = self.construct_docker_args(task)
     new_cid = tdata['cid'] = docker('run', *args).strip()
@@ -412,8 +421,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       ip = ipaddr_of(new_cid)
       self.set_hipache_backend(st, domain, ip, port)
 
-    # take down old thing
-    if old_cid:
+    # take down old thing (if after)
+    if not stop_old_first and old_cid:
       time.sleep(task.get('down_wait_time', 1))
       docker('stop', old_cid)
 
