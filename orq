@@ -15,26 +15,25 @@ usage:
 task json schema:
 
   basics:
-  {
+  [{
     "name": "my_app",
     "dockerdir": ".",
     "domain": "myapp.com",
     "http_port": 3000,
     "host": "box-1.myapp.com",
-  }
+  }]
 
   other allowed keys:
 
     "volumes": [
-      {"id": "app_logs", "container": "/app/logs",
-        "uid": 1000, "gid": 0, "mode": 0755}
+      {"id": "app_logs", "container": "/app/logs"}
       ],
 
     note that volumes are placed in /var/lib/orq/volumes/<id>
 
   for internal use only:
 
-    "raw_image_name": True,
+    "raw_image_name": "something/else",
     "exposed_ports": [{"host": 5000, "container": 5000, "public": ...}],
 
 """
@@ -65,8 +64,7 @@ HIPACHE_TASK = {
     'name': HIPACHE_TASK_NAME,
     'raw_image_name': HIPACHE_IMAGE_NAME,
     'volumes': [
-      {'id': 'hipache_logs', 'container': '/var/log/hipache',
-        'uid': 1000, 'gid': 0, 'mode': '0755'}
+      {'id': 'hipache_logs', 'container': '/var/log/hipache'}
       ],
     'exposed_ports': [
       {'host': PUBLIC_PORT, 'container': 8000, 'public': True},
@@ -78,8 +76,7 @@ REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
     'raw_image_name': 'stackbrew/registry',
     'volumes': [
-      {'id': 'docker_registry_data', 'container': '/tmp/registry',
-        'uid': 0, 'gid': 0, 'mode': '0755'}
+      {'id': 'docker_registry_data', 'container': '/tmp/registry'}
       ],
     'exposed_ports': [
       {'host': REG_PORT, 'container': REG_PORT},
@@ -330,12 +327,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       path = volume_path(vol['id'])
       if not os.path.isdir(path):
         os.makedirs(path)
-        if IS_ROOT:
-          os.chown(path, vol['uid'], vol['gid'])
-          os.chmod(path, int(vol['mode'], 8))
-        else:
-          # TODO: ehhhh
-          os.chmod(path, 01777)
+        os.chmod(path, 01777)
 
   @staticmethod
   def hipache_redis(st):
