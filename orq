@@ -1,49 +1,10 @@
 #!/usr/bin/python
 # vim: sw=2 et
 
-"""
-usage:
-  orq run my_app.orq
-
-  builds new docker image on dev machine.
-  push to registry on host over ssh tunnel.
-  start new container on host, redirect hipache, take down old container.
-
-  orq is a process monitor, container manger, and proxy configurer.
-  security all based on ssh tunnels.
-
-task json schema:
-
-  basics:
-  [{
-    "name": "my_app",
-    "dockerdir": ".",
-    "domain": "myapp.com",
-    "http_port": 3000,
-    "host": "box-1.myapp.com",
-  }]
-
-  other allowed keys:
-
-    "volumes": [
-      {"id": "app_logs", "container": "/app/logs"}
-      ],
-    "env": {
-      "KEY": "value",
-    },
-
-    note that volumes are placed in /var/lib/orq/volumes/<id>
-
-  for internal use only:
-
-    "raw_image_name": "something/else",
-    "exposed_ports": [{"host": 5000, "container": 5000, "public": ...}],
-    "stop_old_first": ...,
-
-"""
+__author__ = "David Reiss <davidn@gmail.com>"
 
 import os, sys, json, socket, SocketServer, threading, subprocess, time
-import tempfile, shutil
+import tempfile, shutil, traceback
 import redis
 
 IS_ROOT = os.getuid() == 0
@@ -98,14 +59,9 @@ HIPACHE_IMAGE_SOURCES = {
 'Dockerfile': r'''
 FROM stackbrew/ubuntu:raring
 
-# From https://gist.github.com/jpetazzo/6127116:
-RUN echo "force-unsafe-io" > /etc/dpkg/dpkg.cfg.d/02apt-speedup
-RUN echo "Acquire::http {No-Cache=True;};" > /etc/apt/apt.conf.d/no-cache
-
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
 RUN apt-get -yq install wget git python2.7-minimal redis-server supervisor
-RUN apt-get -yq clean
 RUN ln -sf python2.7 /usr/bin/python
 RUN useradd -U -M -u 1000 hipache
 
@@ -140,15 +96,10 @@ CMD ["supervisord", "-n"]
 'redis.conf': r'''
 daemonize no
 port 6379
-# unixsocket /var/run/redis/redis.sock
-# unixsocketperm 755
 timeout 0
 loglevel notice
 logfile /var/log/hipache/redis.log
 databases 1
-#save 900 1
-#save 300 10
-#save 60 10000
 stop-writes-on-bgsave-error yes
 rdbcompression yes
 rdbchecksum yes
@@ -277,6 +228,8 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # TODO: check version
+      # TODO: if task definitions for hipache or the registry have changed,
+      # update and restart them.
     except IOError:
       self.data = {'version': 1, 'tasks': []}
       self.add_task(HIPACHE_TASK)
@@ -295,15 +248,14 @@ class ServerHandler(SocketServer.StreamRequestHandler):
   def handle(self):
     try:
       data = json.load(self.rfile)
-      print '>', data # debug
       result = getattr(self, 'op_' + data['op'])(data)
       out = {'success': True, 'result': result}
-      print '<', out # debug
       json.dump(out, self.wfile)
     except:
-      out = {'success': False}
+      tb = traceback.format_exc()
+      sys.stderr.write(tb + '\n')
+      out = {'success': False, 'error': tb}
       json.dump(out, self.wfile)
-      raise  # FIXME
 
   @staticmethod
   def get_image_name(task):
@@ -388,6 +340,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
           pass
         self.run_task(st, task['task'])
         st.save()
+        # TODO: if the thing we just restarted is hipache/redis, and we have
+        # other containers running, we need to re-register them now.
 
   def run_task(self, st, task):
     stop_old_first = task.get('stop_old_first', False)
@@ -542,12 +496,15 @@ class Cli(object):
     tasks = self.load_taskfile(argv[0])
     # TODO: group by host so we don't do extra ssh work
     for task in tasks:
-      dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
+      dockerdir = None
+      if 'dockerdir' in task:
+        dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
       host = task['host']
-      image = image_in_registry(task['name'])
       with SshTunnel(host):
-        docker('build', '-t', image, dockerdir)
-        docker('push', image)
+        if dockerdir:
+          image = image_in_registry(task['name'])
+          docker('build', '-t', image, dockerdir)
+          docker('push', image)
         print_json(do_client({'op': 'run', 'task': task}))
 
   def cmd_stop(self, argv):
