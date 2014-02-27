@@ -14,9 +14,11 @@ REG_PORT = 5000
 if IS_ROOT:
   PUBLIC_PORT = 80
   ORQ_ROOT = '/var/lib/orq'
+  DEBUG = False
 else:
   PUBLIC_PORT = 8000
-  ORQ_ROOT = '/tmp/orq'
+  ORQ_ROOT = os.path.join(os.getenv('HOME'), '.orq')
+  DEBUG = True
 STATE_FILE = os.path.join(ORQ_ROOT, 'state')
 VOL_ROOT = os.path.join(ORQ_ROOT, 'volumes')
 LOCALHOST = '127.0.0.1'
@@ -155,7 +157,8 @@ def volume_path(vid):
 def docker(*argv):
   argv = list(argv)
   argv[0:0] = ['docker']
-  print '+', ' '.join(argv)
+  if DEBUG:
+    print '+', ' '.join(argv)
   try:
     return subprocess.check_output(argv)
   except subprocess.CalledProcessError:
@@ -193,6 +196,7 @@ def print_json(out):
   print
 
 def get_public_ip(cache=[]):
+  # TODO: this needs to be more robust
   if not cache:
     cmd = r"ifconfig eth0 | sed -ne 's/.* inet addr:\([0-9.]*\).*/\1/p'"
     output = subprocess.check_output(cmd, shell=True)
@@ -513,6 +517,35 @@ class Cli(object):
       host = task['host']
       with SshTunnel(host):
         print_json(do_client({'op': 'stop', 'task': task}))
+
+  def cmd_local(self, argv):
+    tasks = self.load_taskfile(argv[0])
+    cids = []
+    urls = []
+    for task in tasks:
+      task.update(task.get('local', {}))
+
+      if 'dockerdir' in task:
+        dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
+        image = image_in_registry(task['name'])
+        docker('build', '-t', image, dockerdir)
+
+      ServerHandler.ensure_host_volumes(task)
+      args = ServerHandler.construct_docker_args(task)
+      cid = docker('run', *args).strip()[:12]
+      cids.append(cid)
+      print 'started %s' % task['name']
+      if 'http_port' in task:
+        urls.append('http://%s:%d/' % (ipaddr_of(cid), task['http_port']))
+    try:
+      print
+      for url in urls:
+        print url
+      print
+      raw_input("press enter to stop containers\n")
+    except:
+      pass
+    docker('stop', *cids)
 
   def cmd_cleanup(self, argv):
     with SshTunnel(argv[0]):

@@ -86,6 +86,7 @@ keys:
 - `host`: The server that this task should run on.
 - `volumes`: A list of volumes (see below).
 - `env`: Environment variables to set {key: value}.
+- `argv`: Arguments to add to `docker run` (array).
 - `raw_image_name`: If present, just run this image (e.g. an image from the
   public registry).
 - `stop_old_first`: Set to true if your container can't handle two instances
@@ -159,9 +160,11 @@ TODO
 
 - SSL
 - Easy backups of specific volumes
+- Image build dependencies (images depending on intermediate images)
+- Running multiple copies of a task
 - Log rotation for hipache?
 - Links? (unix sockets in shared directories are easier)
-- Allow switching nginx for hipache
+- Allow switching nginx, etc. for hipache
 
 
 
