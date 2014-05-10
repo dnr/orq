@@ -42,7 +42,7 @@ HIPACHE_TASK = {
 REGISTRY_TASK_NAME = '__registry__'
 REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
-    'raw_image_name': 'registry',
+    'raw_image_name': 'stackbrew/registry',
     'env': {
       'GUNICORN_WORKERS': 2,
       'REGISTRY_PORT': REG_PORT,
@@ -59,7 +59,7 @@ REGISTRY_TASK = {
 HIPACHE_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
-FROM stackbrew/ubuntu:raring
+FROM stackbrew/ubuntu:trusty
 
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
