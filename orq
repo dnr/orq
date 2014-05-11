@@ -5,7 +5,6 @@ __author__ = "David Reiss <davidn@gmail.com>"
 
 import os, sys, json, socket, SocketServer, threading, subprocess, time
 import tempfile, shutil, traceback
-import redis
 
 IS_ROOT = os.getuid() == 0
 
@@ -13,10 +12,12 @@ ORQ_PORT = 4999
 REG_PORT = 5000
 if IS_ROOT:
   PUBLIC_PORT = 80
+  PUBLIC_SSL_PORT = 443
   ORQ_ROOT = '/var/lib/orq'
   DEBUG = False
 else:
   PUBLIC_PORT = 8000
+  PUBLIC_SSL_PORT = 8443
   ORQ_ROOT = os.path.join(os.getenv('HOME'), '.orq')
   DEBUG = True
 STATE_FILE = os.path.join(ORQ_ROOT, 'state')
@@ -25,16 +26,20 @@ LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
 CHECK_INTERVAL = 10
 
-HIPACHE_TASK_NAME = '__hipache__'
-HIPACHE_IMAGE_NAME = 'orq_hipache'
-HIPACHE_TASK = {
-    'name': HIPACHE_TASK_NAME,
-    'raw_image_name': HIPACHE_IMAGE_NAME,
+NGINX_TASK_NAME = '__nginx__'
+NGINX_IMAGE_NAME = 'orq_nginx'
+NGINX_CONFIG_VOL = 'proxy_config'
+NGINX_TASK = {
+    'name': NGINX_TASK_NAME,
+    'raw_image_name': NGINX_IMAGE_NAME,
     'volumes': [
-      {'id': 'hipache_logs', 'container': '/var/log/hipache'}
+      {'id': NGINX_CONFIG_VOL, 'container': '/etc/nginx'},
+      {'id': 'proxy_ssl_certs', 'container': '/certs'},
+      {'id': 'proxy_logs', 'container': '/var/log/nginx'},
       ],
     'exposed_ports': [
       {'host': PUBLIC_PORT, 'container': 8000, 'public': True},
+      {'host': PUBLIC_SSL_PORT, 'container': 8443, 'public': True},
       ],
     'stop_old_first': True,
     }
@@ -56,94 +61,21 @@ REGISTRY_TASK = {
     'stop_old_first': True,
     }
 
-HIPACHE_IMAGE_SOURCES = {
+NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
 FROM stackbrew/ubuntu:trusty
-
+RUN date='Sat May 10 16:19:39 PDT 2014'
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
-RUN apt-get -yq install wget git python2.7-minimal redis-server supervisor
-RUN ln -sf python2.7 /usr/bin/python
-RUN useradd -U -M -u 1000 hipache
-
-RUN wget -qO- http://nodejs.org/dist/v0.8.26/node-v0.8.26-linux-x64.tar.gz | tar -C /usr/local/ --strip-components=1 -zx
-RUN npm install -g hipache
-RUN mkdir -p /etc/hipache
-ADD ./supervisord.conf /etc/supervisor/supervisord.conf
-ADD ./config.json /etc/hipache/config.json
-ADD ./redis.conf /etc/redis/redis.conf
-USER hipache
+RUN apt-get -yq install nginx
+RUN chown www-data /var/lib/nginx
 EXPOSE 8000
-VOLUME ["/var/log/hipache"]
-CMD ["supervisord", "-n"]
-''',
-
-'config.json': r'''
-{
-  "server": {
-    "accessLog": "/var/log/hipache/access.log",
-    "port": 8000,
-    "workers": 5,
-    "maxSockets": 1000,
-    "deadBackendTTL": 30,
-    "tcpTimeout": 30,
-    "retryOnError": 3,
-    "deadBackendOn500": true,
-    "httpKeepAlive": false
-  }
-}
-''',
-
-'redis.conf': r'''
-daemonize no
-port 6379
-timeout 0
-loglevel notice
-logfile /var/log/hipache/redis.log
-databases 1
-stop-writes-on-bgsave-error yes
-rdbcompression yes
-rdbchecksum yes
-dbfilename dump.rdb
-dir /tmp
-slave-serve-stale-data yes
-slave-read-only yes
-slave-priority 100
-appendonly no
-no-appendfsync-on-rewrite yes
-auto-aof-rewrite-percentage 100
-auto-aof-rewrite-min-size 64mb
-lua-time-limit 5000
-slowlog-log-slower-than 10000
-slowlog-max-len 128
-hash-max-ziplist-entries 512
-hash-max-ziplist-value 64
-list-max-ziplist-entries 512
-list-max-ziplist-value 64
-set-max-intset-entries 512
-zset-max-ziplist-entries 128
-zset-max-ziplist-value 64
-activerehashing yes
-client-output-buffer-limit normal 0 0 0
-client-output-buffer-limit slave 256mb 64mb 60
-client-output-buffer-limit pubsub 32mb 8mb 60
-''',
-
-'supervisord.conf': r'''
-[supervisord]
-nodaemon=true
-logfile=/var/log/hipache/supervisord.log
-pidfile=/tmp/supervisord.pid
-childlogdir=/var/log/hipache
-
-[program:hipache]
-command=/usr/local/bin/hipache -c /etc/hipache/config.json
-autorestart=true
-
-[program:redis]
-command=/usr/bin/redis-server /etc/redis/redis.conf
-autorestart=true
+EXPOSE 8443
+VOLUME /etc/nginx
+VOLUME /var/log/nginx
+USER www-data
+CMD ["nginx"]
 ''',
 
 }
@@ -204,6 +136,60 @@ def get_public_ip(cache=[]):
   return cache[0]
 
 
+def gen_nginx_config(servers):
+  def make_server(name, backend_ip, backend_port, ssl):
+    if ssl:
+      ssl_config = '''
+        listen 8443 ssl;
+        ssl_certificate /certs/%(name)s.crt;
+        ssl_certificate_key /certs/%(name)s.key;
+      ''' % vars()
+    else:
+      ssl_config = ''
+
+    return '''
+      server {
+        server_name %(name)s;
+        listen 8000;
+%(ssl_config)s
+        location / {
+          proxy_pass http://%(backend_ip)s:%(backend_port)s;
+          proxy_http_version 1.1;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection $connection_upgrade;
+        }
+      }
+    ''' % vars()
+
+  server_blocks = ''.join(make_server(*s) for s in servers)
+
+  return '''
+    daemon off;
+    worker_processes 4;
+    pid /dev/null;
+    error_log stderr;
+    events {
+      worker_connections 4000;
+    }
+    worker_rlimit_nofile 9000;
+    http {
+      map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+      }
+      access_log /var/log/nginx/access.log;
+      error_log /var/log/nginx/error.log;
+      proxy_buffering off;
+      proxy_cache off;
+      server {
+        listen 8000;
+        return 404;
+      }
+%(server_blocks)s
+    }
+  ''' % vars()
+
+
 class ServerState(object):
   """
   schema:
@@ -217,6 +203,9 @@ class ServerState(object):
     ],
   }
   """
+  def tasks(self):
+    return self.data['tasks']
+
   def find_tdata_by_name(self, name):
     for tdata in self.data['tasks']:
       if tdata['task']['name'] == name:
@@ -232,11 +221,11 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # TODO: check version
-      # TODO: if task definitions for hipache or the registry have changed,
+      # TODO: if task definitions for nginx or the registry have changed,
       # update and restart them.
     except IOError:
       self.data = {'version': 1, 'tasks': []}
-      self.add_task(HIPACHE_TASK)
+      self.add_task(NGINX_TASK)
       self.add_task(REGISTRY_TASK)
     return self
 
@@ -308,30 +297,25 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         os.chmod(path, 01777)
 
   @staticmethod
-  def hipache_redis(st):
-    hipache_cid = st.find_tdata_by_name(HIPACHE_TASK_NAME)['cid']
-    hipache_ip = ipaddr_of(hipache_cid)
-    return redis.StrictRedis(hipache_ip)
+  def reconfigure_proxy(st):
+    servers = []
+    for tdata in st.tasks():
+      task = tdata['task']
+      domain = task.get('domain')
+      port = task.get('http_port')
+      if domain and port:
+        ip = ipaddr_of(tdata['cid'])
+        servers.append((domain, ip, port, False))
+    cfg = gen_nginx_config(servers)
 
-  @staticmethod
-  def set_hipache_backend(st, domain, ip, port):
-    r = ServerHandler.hipache_redis(st)
+    fn = os.path.join(volume_path(NGINX_CONFIG_VOL), 'nginx.conf')
+    open(fn, 'w').write(cfg)
+    os.chmod(fn, 0644)
 
-    endpoint = 'http://%s:%d' % (ip, port)
-    key = 'frontend:%s' % domain
+    nginx_cid = st.find_tdata_by_name(NGINX_TASK_NAME)['cid']
 
-    # TODO: simplify and wrap in a transaction
-    existing_keys = r.llen(key)
-    if existing_keys == 0:
-      r.rpush(key, domain)
-    r.linsert(key, 'after', domain, endpoint)
-    while r.llen(key) > 2:
-      r.rpop(key)
-
-  @staticmethod
-  def clear_hipache_backend(st, domain):
-    r = ServerHandler.hipache_redis(st)
-    r.delete('frontend:%s' % domain)
+    try: docker('kill', '-s', 'HUP', nginx_cid)
+    except DockerError: pass
 
   def op_check_running(self, data):
     with ServerState() as st:
@@ -344,8 +328,6 @@ class ServerHandler(SocketServer.StreamRequestHandler):
           pass
         self.run_task(st, task['task'])
         st.save()
-        # TODO: if the thing we just restarted is hipache/redis, and we have
-        # other containers running, we need to re-register them now.
 
   def run_task(self, st, task):
     # pull latest first
@@ -356,6 +338,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     self.ensure_host_volumes(task)
 
+    # if we're running the proxy, write a (maybe empty) config first
+    if task['name'] == NGINX_TASK_NAME:
+      ServerHandler.reconfigure_proxy(st)
+
     # add to state and get old cid
     tdata = st.find_tdata_by_name(task['name'])
     if not tdata:
@@ -365,7 +351,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     # check if the container is already running the new image
     try:
-      if old_cid:
+      if old_cid and inspect(old_cid, 'State', 'Running'):
         running_image = inspect(old_cid, 'Image')
         new_image = inspect(self.get_image_name(task), 'id')
         if running_image == new_image:
@@ -375,20 +361,18 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     # take down old thing (if before)
     if stop_old_first and old_cid:
-      docker('stop', old_cid)
+      try: docker('stop', old_cid)
+      except DockerError: pass
 
     # run new thing
     args = self.construct_docker_args(task)
-    new_cid = tdata['cid'] = docker('run', *args).strip()
+    tdata['cid'] = docker('run', *args).strip()
 
     time.sleep(task.get('up_wait_time', 1))
 
-    # move hipache backend
-    domain = task.get('domain')
-    port = task.get('http_port')
-    if domain and port:
-      ip = ipaddr_of(new_cid)
-      self.set_hipache_backend(st, domain, ip, port)
+    # point nginx to new thing
+    if 'domain' in task:
+      ServerHandler.reconfigure_proxy(st)
 
     # take down old thing (if after)
     if not stop_old_first and old_cid:
@@ -410,11 +394,11 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       if tdata:
         task = tdata['task']
         cid = tdata['cid']
-        if 'domain' in task:
-          self.clear_hipache_backend(st, task['domain'])
         if cid:
           docker('stop', cid)
         st.data['tasks'].remove(tdata)
+        if 'domain' in task:
+          ServerHandler.reconfigure_proxy(st)
 
   def op_cleanup(self, data):
     subprocess.call('''
@@ -425,22 +409,22 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     ''', shell=True)
 
 
-def build_hipache():
+def build_local_image(sources, name):
   tmpdir = tempfile.mkdtemp()
   os.chdir(tmpdir)
-  for k, v in HIPACHE_IMAGE_SOURCES.items():
+  for k, v in sources.items():
     open(k, 'w').write(v)
-  docker('build', '--rm', '-t', HIPACHE_IMAGE_NAME, '.')
+  docker('build', '--rm', '-t', name, '.')
   os.chdir('/')
   shutil.rmtree(tmpdir)
 
 
 def run_daemon():
-  # build hipache image
+  # build nginx image
   try:
-    inspect(HIPACHE_IMAGE_NAME, 'config')
+    inspect(NGINX_IMAGE_NAME, 'config')
   except InspectError:
-    build_hipache()
+    build_local_image(NGINX_IMAGE_SOURCES, NGINX_IMAGE_NAME)
 
   # set up for daemon
   os.umask(077)
@@ -451,9 +435,9 @@ def run_daemon():
 
   def send_check_requests():
     while True:
-      time.sleep(CHECK_INTERVAL)
       try: do_client({'op': 'check_running'})
       except: pass
+      time.sleep(CHECK_INTERVAL)
   scr = threading.Thread(target=send_check_requests)
   scr.setDaemon(True)
   scr.start()
