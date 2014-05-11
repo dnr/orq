@@ -348,6 +348,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         # other containers running, we need to re-register them now.
 
   def run_task(self, st, task):
+    # pull latest first
+    docker('pull', ServerHandler.get_image_name(task))
+
     stop_old_first = task.get('stop_old_first', False)
 
     self.ensure_host_volumes(task)
