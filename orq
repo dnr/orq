@@ -349,7 +349,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
   def run_task(self, st, task):
     # pull latest first
-    docker('pull', ServerHandler.get_image_name(task))
+    if not task.get('raw_image_name'):
+      docker('pull', ServerHandler.get_image_name(task))
 
     stop_old_first = task.get('stop_old_first', False)
 
@@ -429,7 +430,7 @@ def build_hipache():
   os.chdir(tmpdir)
   for k, v in HIPACHE_IMAGE_SOURCES.items():
     open(k, 'w').write(v)
-  docker('build', '-rm', '-t', HIPACHE_IMAGE_NAME, '.')
+  docker('build', '--rm', '-t', HIPACHE_IMAGE_NAME, '.')
   os.chdir('/')
   shutil.rmtree(tmpdir)
 
