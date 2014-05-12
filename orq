@@ -26,8 +26,13 @@ LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
 CHECK_INTERVAL = 10
 
+# Change this when changing any of:
+# - nginx Dockerfile
+# - default task structs
+VERSION = 2
+
 NGINX_TASK_NAME = '__nginx__'
-NGINX_IMAGE_NAME = 'orq_nginx'
+NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
 NGINX_CONFIG_VOL = 'proxy_config'
 NGINX_TASK = {
     'name': NGINX_TASK_NAME,
@@ -220,11 +225,23 @@ class ServerState(object):
   def __enter__(self):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
-      # TODO: check version
-      # TODO: if task definitions for nginx or the registry have changed,
-      # update and restart them.
+      if self.data['version'] == 1:
+        # migrate from 1 to 2:
+        hipache_tdata = self.find_tdata_by_name('__hipache__')
+        if hipache_tdata:
+          self.data['tasks'].remove(hipache_tdata)
+          cid = hipache_tdata['cid']
+          if cid:
+            try: docker('stop', cid)
+            except DockerError: pass
+        self.add_task(NGINX_TASK)
+        self.data['version'] = 2
+
+      # future migrations:
+      # if self.data['version'] == 2: ...
+
     except IOError:
-      self.data = {'version': 1, 'tasks': []}
+      self.data = {'version': VERSION, 'tasks': []}
       self.add_task(NGINX_TASK)
       self.add_task(REGISTRY_TASK)
     return self
@@ -313,9 +330,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     os.chmod(fn, 0644)
 
     nginx_cid = st.find_tdata_by_name(NGINX_TASK_NAME)['cid']
-
-    try: docker('kill', '-s', 'HUP', nginx_cid)
-    except DockerError: pass
+    if nginx_cid:
+      try: docker('kill', '-s', 'HUP', nginx_cid)
+      except DockerError: pass
 
   def op_check_running(self, data):
     with ServerState() as st:
