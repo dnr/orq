@@ -25,6 +25,7 @@ VOL_ROOT = os.path.join(ORQ_ROOT, 'volumes')
 LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
 CHECK_INTERVAL = 10
+FORCE_SSL = 'FORCE_SSL'
 
 # Change this when changing any of:
 # - nginx Dockerfile
@@ -189,28 +190,51 @@ def write_cert_key(domain, cert, key):
 
 def gen_nginx_config(servers):
   def make_server(domain, backend_ip, backend_port, ssl):
-    if ssl:
-      ssl_config = '''
-        listen 8443 ssl;
-        ssl_certificate /certs/%(domain)s.crt;
-        ssl_certificate_key /certs/%(domain)s.key;
+    sslcerts = '''
+          ssl_certificate /certs/%(domain)s.crt;
+          ssl_certificate_key /certs/%(domain)s.key;
+    ''' % vars()
+    proxy = '''
+          location / {
+            proxy_pass http://%(backend_ip)s:%(backend_port)s;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          }
+    ''' % vars()
+    if ssl == FORCE_SSL:
+      return '''
+        server {
+          server_name %(domain)s;
+          listen 8000;
+          return 301 https://$host$request_uri;
+        }
+        server {
+          server_name %(domain)s;
+          listen 8443 ssl;
+%(sslcerts)s
+%(proxy)s
+        }
+      ''' % vars()
+    elif ssl:
+      return '''
+        server {
+          server_name %(domain)s;
+          listen 8000;
+          listen 8443 ssl;
+%(sslcerts)s
+%(proxy)s
+        }
       ''' % vars()
     else:
-      ssl_config = ''
-
-    return '''
-      server {
-        server_name %(domain)s;
-        listen 8000;
-%(ssl_config)s
-        location / {
-          proxy_pass http://%(backend_ip)s:%(backend_port)s;
-          proxy_http_version 1.1;
-          proxy_set_header Upgrade $http_upgrade;
-          proxy_set_header Connection $connection_upgrade;
+      return '''
+        server {
+          server_name %(domain)s;
+          listen 8000;
+%(proxy)s
         }
-      }
-    ''' % vars()
+      ''' % vars()
 
   server_blocks = ''.join(make_server(*s) for s in servers)
 
@@ -380,8 +404,11 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       if domain and port:
         ip = ipaddr_of(tdata['cid'])
         cert_path, key_path = cert_key_paths(domain)
-        ssl = bool(task.get('ssl_cert') and
-                   os.path.exists(cert_path) and os.path.exists(key_path))
+        if task.get('force_ssl'):
+          ssl = FORCE_SSL
+        else:
+          ssl = bool(task.get('ssl_cert') and
+              os.path.exists(cert_path) and os.path.exists(key_path))
         servers.append((domain, ip, port, ssl))
     cfg = gen_nginx_config(servers)
 
