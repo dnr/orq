@@ -29,17 +29,18 @@ CHECK_INTERVAL = 10
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 2
+VERSION = 3
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
 NGINX_CONFIG_VOL = 'proxy_config'
+NGINX_CERTS_VOL = 'proxy_ssl_certs'
 NGINX_TASK = {
     'name': NGINX_TASK_NAME,
     'raw_image_name': NGINX_IMAGE_NAME,
     'volumes': [
       {'id': NGINX_CONFIG_VOL, 'container': '/etc/nginx'},
-      {'id': 'proxy_ssl_certs', 'container': '/certs'},
+      {'id': NGINX_CERTS_VOL, 'container': '/certs'},
       {'id': 'proxy_logs', 'container': '/var/log/nginx'},
       ],
     'exposed_ports': [
@@ -74,22 +75,63 @@ RUN date='Sat May 10 16:19:39 PDT 2014'
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
 RUN apt-get -yq install nginx
-RUN chown www-data /var/lib/nginx
 EXPOSE 8000
 EXPOSE 8443
 VOLUME /etc/nginx
 VOLUME /var/log/nginx
-USER www-data
+VOLUME /certs
 CMD ["nginx"]
 ''',
 
 }
+
+
+# We want to set a default server for nginx so that requests without a host get
+# a 404. To do that over ssl, we need to present some cert. So here's a cert.
+DUMMY_CERT = '''-----BEGIN CERTIFICATE-----
+MIIB7jCCAVegAwIBAgIJAMyHwAmYdTWjMA0GCSqGSIb3DQEBCwUAMBAxDjAMBgNV
+BAMMBWR1bW15MB4XDTE0MDUxMjAyMjcyMVoXDTI0MDUwOTAyMjcyMVowEDEOMAwG
+A1UEAwwFZHVtbXkwgZ8wDQYJKoZIhvcNAQEBBQADgY0AMIGJAoGBAK8NqQh/CHQg
+Fa8X8ge/3Dvq26gjX659S7SsSHriIQq6ebl4sunccjOF9akvi01buBgJS5DH3XYM
+AyEk3iDRYff8QpPYmcthjkI6SsEE5opmzGhBsLz+m/Lpcuo36j5pDW7pHGKC+yug
+ARCTGmTidMk1ADuij3G6cOEKTp4NMFdtAgMBAAGjUDBOMB0GA1UdDgQWBBSUswAf
+QWEn2hFdDTpvnoAFuHXZWTAfBgNVHSMEGDAWgBSUswAfQWEn2hFdDTpvnoAFuHXZ
+WTAMBgNVHRMEBTADAQH/MA0GCSqGSIb3DQEBCwUAA4GBAHxt3WOiJLCTWIg3MV9q
+TyE4agSJrSCNU7XHziVsVfDC3ez74fQLbRiD/ZCiDW03pMFD1ludz3G0bpspAiGB
++rrOy0nVHLd1Kv7S5vOicfYfxyEJ66bWtaofVUb8eOuy8eahbcXJK0PiVTfZepTT
+aTE7X9vqbOuh5D87P0JhHT+f
+-----END CERTIFICATE-----
+'''
+DUMMY_KEY = '''-----BEGIN PRIVATE KEY-----
+MIICdgIBADANBgkqhkiG9w0BAQEFAASCAmAwggJcAgEAAoGBAK8NqQh/CHQgFa8X
+8ge/3Dvq26gjX659S7SsSHriIQq6ebl4sunccjOF9akvi01buBgJS5DH3XYMAyEk
+3iDRYff8QpPYmcthjkI6SsEE5opmzGhBsLz+m/Lpcuo36j5pDW7pHGKC+yugARCT
+GmTidMk1ADuij3G6cOEKTp4NMFdtAgMBAAECgYAjvy9ga8iHJjInYkVrbbOEjM40
+RJz6Xd3C1FesuFa1ASVwSYSHmxu7B8UFuo7AylUKm4NR2m6P953/+65cl0Vg7x7m
+nDmKjayTDgZvQbTdOZdzmFR1h3B+mcSQ4n4mDZeHjv3Qafo40Jpfgsc6F5gkdv5Y
+rgtnuKJNY1gCZgUmQQJBANuwue3/SoDvkxTp46FpGSWRAU3+1ASSdxB1gb6wp8ld
+M5TVv7xE4i4AtzjTeM3sQdHsYJGuEtcbKyk0d0tJWR0CQQDL/E7PTc0ooxuryWXj
+f0yYbVMZuMySjNIrriUtb6yM36sM3HarWIWSAApxlLO/3XCynlXAD02iFhGW2xuk
+n/aRAkA3IgfXOY06BGW2Buhwdo6wBc79Aum0aAlnYQX5lB3XhANQ47+lgOf+QYG5
+yiB0FUmDZD3r8XKa9x+CzL7vbu3lAkEAxaIGmUM/6oddX+sZFHlZtLT3NoydZ7+Y
+QUnQK11vSG3MRAG11/1ELFhtxe3U2aeqcOSHIDWzeb73+7j951o0gQJARJZZZP6T
+wwWKvZWQsZfIFJbSqh/oNuZTivzW3o5XulOU78YD4BTanVvbC0TkMGmDHT+oOMq5
+7iCwLAUvvA+t3g==
+-----END PRIVATE KEY-----
+'''
+
 
 class DockerError(Exception): pass
 class InspectError(DockerError): pass
 
 def volume_path(vid):
   return os.path.join(VOL_ROOT, vid)
+
+def cert_key_paths(domain):
+  certs_path = volume_path(NGINX_CERTS_VOL)
+  cert = os.path.join(certs_path, domain + '.crt')
+  key  = os.path.join(certs_path, domain + '.key')
+  return cert, key
 
 def docker(*argv):
   argv = list(argv)
@@ -140,21 +182,25 @@ def get_public_ip(cache=[]):
     cache.append(output.strip())
   return cache[0]
 
+def write_cert_key(domain, cert, key):
+  cert_path, key_path = cert_key_paths(domain)
+  open(cert_path, 'w').write(cert)
+  open(key_path, 'w').write(key)
 
 def gen_nginx_config(servers):
-  def make_server(name, backend_ip, backend_port, ssl):
+  def make_server(domain, backend_ip, backend_port, ssl):
     if ssl:
       ssl_config = '''
         listen 8443 ssl;
-        ssl_certificate /certs/%(name)s.crt;
-        ssl_certificate_key /certs/%(name)s.key;
+        ssl_certificate /certs/%(domain)s.crt;
+        ssl_certificate_key /certs/%(domain)s.key;
       ''' % vars()
     else:
       ssl_config = ''
 
     return '''
       server {
-        server_name %(name)s;
+        server_name %(domain)s;
         listen 8000;
 %(ssl_config)s
         location / {
@@ -170,6 +216,7 @@ def gen_nginx_config(servers):
 
   return '''
     daemon off;
+    user www-data;
     worker_processes 4;
     pid /dev/null;
     error_log stderr;
@@ -188,6 +235,9 @@ def gen_nginx_config(servers):
       proxy_cache off;
       server {
         listen 8000;
+        listen 8443 ssl;
+        ssl_certificate /certs/__dummy__.crt;
+        ssl_certificate_key /certs/__dummy__.key;
         return 404;
       }
 %(server_blocks)s
@@ -222,23 +272,30 @@ class ServerState(object):
     self.data['tasks'].append(tdata)
     return tdata
 
+  def replace_task(self, old_name, new_task):
+    old_tdata = self.find_tdata_by_name(old_name)
+    if old_tdata:
+      self.data['tasks'].remove(old_tdata)
+      cid = old_tdata['cid']
+      if cid:
+        try: docker('stop', cid)
+        except DockerError: pass
+    self.add_task(new_task)
+
   def __enter__(self):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
+      # migrations:
       if self.data['version'] == 1:
-        # migrate from 1 to 2:
-        hipache_tdata = self.find_tdata_by_name('__hipache__')
-        if hipache_tdata:
-          self.data['tasks'].remove(hipache_tdata)
-          cid = hipache_tdata['cid']
-          if cid:
-            try: docker('stop', cid)
-            except DockerError: pass
-        self.add_task(NGINX_TASK)
+        self.replace_task('__hipache__', NGINX_TASK)
         self.data['version'] = 2
 
+      if self.data['version'] == 2:
+        self.replace_task('__nginx__', NGINX_TASK)
+        self.data['version'] = 3
+
       # future migrations:
-      # if self.data['version'] == 2: ...
+      # if self.data['version'] == ...
 
     except IOError:
       self.data = {'version': VERSION, 'tasks': []}
@@ -322,7 +379,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       port = task.get('http_port')
       if domain and port:
         ip = ipaddr_of(tdata['cid'])
-        servers.append((domain, ip, port, False))
+        cert_path, key_path = cert_key_paths(domain)
+        ssl = bool(task.get('ssl_cert') and
+                   os.path.exists(cert_path) and os.path.exists(key_path))
+        servers.append((domain, ip, port, ssl))
     cfg = gen_nginx_config(servers)
 
     fn = os.path.join(volume_path(NGINX_CONFIG_VOL), 'nginx.conf')
@@ -355,8 +415,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     self.ensure_host_volumes(task)
 
-    # if we're running the proxy, write a (maybe empty) config first
+    # if we're running the proxy, ensure we have a config
     if task['name'] == NGINX_TASK_NAME:
+      write_cert_key('__dummy__', DUMMY_CERT, DUMMY_KEY)
       ServerHandler.reconfigure_proxy(st)
 
     # add to state and get old cid
@@ -417,6 +478,9 @@ class ServerHandler(SocketServer.StreamRequestHandler):
         if 'domain' in task:
           ServerHandler.reconfigure_proxy(st)
 
+  def op_upload_cert(self, data):
+    write_cert_key(data['task']['domain'], data['cert'], data['key'])
+
   def op_cleanup(self, data):
     subprocess.call('''
       # delete all non-running container
@@ -451,6 +515,7 @@ def run_daemon():
   os.chdir(ORQ_ROOT)
 
   def send_check_requests():
+    time.sleep(1)
     while True:
       try: do_client({'op': 'check_running'})
       except: pass
@@ -515,6 +580,20 @@ class Cli(object):
           docker('build', '-t', image, dockerdir)
           docker('push', image)
         print_json(do_client({'op': 'run', 'task': task}))
+
+  def cmd_upload_cert(self, argv):
+    tasks = self.load_taskfile(argv[0])
+    for task in tasks:
+      if not task.get('ssl_cert') or not task.get('domain'):
+        continue
+      host = task['host']
+      with SshTunnel(host):
+        cert_file = os.path.join(os.path.dirname(argv[0]), task['ssl_cert'])
+        key_file  = os.path.join(os.path.dirname(argv[0]), task['ssl_key'])
+        cert = open(cert_file).read()
+        key = open(key_file).read()
+        print_json(do_client({'op': 'upload_cert', 'task': task,
+                              'cert': cert, 'key': key}))
 
   def cmd_stop(self, argv):
     tasks = self.load_taskfile(argv[0])
