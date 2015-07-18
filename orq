@@ -30,7 +30,7 @@ FORCE_SSL = 'FORCE_SSL'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 3
+VERSION = 4
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -54,13 +54,12 @@ NGINX_TASK = {
 REGISTRY_TASK_NAME = '__registry__'
 REGISTRY_TASK = {
     'name': REGISTRY_TASK_NAME,
-    'raw_image_name': 'stackbrew/registry',
+    'raw_image_name': 'registry:2',
     'env': {
-      'GUNICORN_WORKERS': 2,
-      'REGISTRY_PORT': REG_PORT,
+      'REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY': '/data',
       },
     'volumes': [
-      {'id': 'docker_registry_data', 'container': '/tmp/registry'}
+      {'id': 'docker_registry2_data', 'container': '/data'}
       ],
     'exposed_ports': [
       {'host': REG_PORT, 'container': REG_PORT},
@@ -71,8 +70,8 @@ REGISTRY_TASK = {
 NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
-FROM stackbrew/ubuntu:trusty
-RUN date='Sat May 10 16:19:39 PDT 2014'
+FROM ubuntu:trusty
+RUN date='Sat Jul 18 00:27:51 PDT 2015'
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
 RUN apt-get -yq install nginx
@@ -323,6 +322,11 @@ class ServerState(object):
       if self.data['version'] == 2:
         self.replace_task('__nginx__', NGINX_TASK)
         self.data['version'] = 3
+
+      if self.data['version'] == 3:
+        self.replace_task('__nginx__', NGINX_TASK)
+        self.replace_task('__registry__', REGISTRY_TASK)
+        self.data['version'] = 4
 
       # future migrations:
       # if self.data['version'] == ...
