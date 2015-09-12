@@ -468,7 +468,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     try:
       if old_cid and inspect(old_cid, 'State', 'Running'):
         running_image = inspect(old_cid, 'Image')
-        new_image = inspect(self.get_image_name(task), 'id')
+        new_image = inspect(self.get_image_name(task), 'Id')
         if running_image == new_image:
           return
     except InspectError:
