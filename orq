@@ -613,9 +613,11 @@ class Cli(object):
       host = task['host']
       with SshTunnel(host):
         if dockerdir:
-          image = image_in_registry(task['name'])
+          image = task['name']
+          regimage = image_in_registry(image)
           docker('build', '-t', image, dockerdir)
-          docker('push', image)
+          docker('tag', '-f', image, regimage)
+          docker('push', regimage)
         print_json(do_client({'op': 'run', 'task': task}))
 
   def cmd_upload_cert(self, argv):
