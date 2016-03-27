@@ -30,7 +30,7 @@ FORCE_SSL = 'FORCE_SSL'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 4
+VERSION = 5
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -71,7 +71,7 @@ NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
 FROM ubuntu:trusty
-RUN date='Sat Jul 18 00:27:51 PDT 2015'
+RUN date='Sun Mar 27 13:24:15 PDT 2016'
 RUN apt-get -yq update
 RUN apt-get -yq upgrade
 RUN apt-get -yq install nginx
@@ -327,6 +327,10 @@ class ServerState(object):
         self.replace_task('__nginx__', NGINX_TASK)
         self.replace_task('__registry__', REGISTRY_TASK)
         self.data['version'] = 4
+
+      if self.data['version'] == 4:
+        self.replace_task('__nginx__', NGINX_TASK)
+        self.data['version'] = 5
 
       # future migrations:
       # if self.data['version'] == ...
