@@ -185,7 +185,8 @@ def get_public_ip(cache=[]):
 def write_cert_key(domain, cert, key):
   cert_path, key_path = cert_key_paths(domain)
   open(cert_path, 'w').write(cert)
-  open(key_path, 'w').write(key)
+  if key:
+    open(key_path, 'w').write(key)
 
 def gen_nginx_config(servers):
   def make_server(domain, backend_ip, backend_port, ssl):
@@ -430,6 +431,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     open(fn, 'w').write(cfg)
     os.chmod(fn, 0644)
 
+    ServerHandler.hup_nginx(st)
+
+  @staticmethod
+  def hup_nginx(st):
     nginx_cid = st.find_tdata_by_name(NGINX_TASK_NAME)['cid']
     if nginx_cid:
       try: docker('kill', '-s', 'HUP', nginx_cid)
@@ -521,6 +526,8 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
   def op_upload_cert(self, data):
     write_cert_key(data['task']['domain'], data['cert'], data['key'])
+    with ServerState() as st:
+      ServerHandler.hup_nginx(st)
 
   def op_cleanup(self, data):
     subprocess.call('''
@@ -634,7 +641,8 @@ class Cli(object):
         cert_file = os.path.join(os.path.dirname(argv[0]), task['ssl_cert'])
         key_file  = os.path.join(os.path.dirname(argv[0]), task['ssl_key'])
         cert = open(cert_file).read()
-        key = open(key_file).read()
+        try: key = open(key_file).read()
+        except IOError: key = None
         print_json(do_client({'op': 'upload_cert', 'task': task,
                               'cert': cert, 'key': key}))
 
