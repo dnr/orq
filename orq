@@ -608,31 +608,51 @@ class Cli(object):
     return getattr(self, 'cmd_' + argv[0])(argv[1:])
 
   @staticmethod
-  def load_taskfile(taskfile):
-    return json.load(open(taskfile, 'r'))
+  def load_taskfile(argv):
+    tasks = json.load(open(argv[0], 'r'))
+    if len(argv) > 1:
+      tasks = filter(Cli.task_matcher(argv[1:]), tasks)
+    return tasks
+
+  @staticmethod
+  def task_matcher(words):
+    return lambda task: any(word in task['name'] for word in words)
 
   def cmd_daemon(self, argv):
     run_daemon()
 
   def cmd_run(self, argv):
-    tasks = self.load_taskfile(argv[0])
-    # TODO: group by host so we don't do extra ssh work
+    tasks = self.load_taskfile(argv)
+
+    print "==== BUILDING"
     for task in tasks:
-      dockerdir = None
       if 'dockerdir' in task:
         dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
-      host = task['host']
+        image = task['name']
+        regimage = image_in_registry(image)
+        docker('build', '-t', image, dockerdir)
+        docker('tag', image, regimage)
+
+    byhost = {}
+    for task in tasks:
+      byhost.setdefault(task['host'], []).append(task)
+    byhost = byhost.items()
+
+    print "==== PUSHING"
+    for host, tasks in byhost:
       with SshTunnel(host):
-        if dockerdir:
-          image = task['name']
-          regimage = image_in_registry(image)
-          docker('build', '-t', image, dockerdir)
-          docker('tag', '-f', image, regimage)
-          docker('push', regimage)
-        print_json(do_client({'op': 'run', 'task': task}))
+        for task in tasks:
+          if 'dockerdir' in task:
+            docker('push', image_in_registry(task['name']))
+
+    print "==== RUNNING"
+    for host, tasks in byhost:
+      with SshTunnel(host):
+        for task in tasks:
+          print_json(do_client({'op': 'run', 'task': task}))
 
   def cmd_upload_cert(self, argv):
-    tasks = self.load_taskfile(argv[0])
+    tasks = self.load_taskfile(argv)
     for task in tasks:
       if not task.get('ssl_cert') or not task.get('domain'):
         continue
@@ -647,14 +667,14 @@ class Cli(object):
                               'cert': cert, 'key': key}))
 
   def cmd_stop(self, argv):
-    tasks = self.load_taskfile(argv[0])
+    tasks = self.load_taskfile(argv)
     for task in tasks:
       host = task['host']
       with SshTunnel(host):
         print_json(do_client({'op': 'stop', 'task': task}))
 
   def cmd_local(self, argv):
-    tasks = self.load_taskfile(argv[0])
+    tasks = self.load_taskfile(argv)
     cids = []
     urls = []
     for task in tasks:
@@ -681,6 +701,10 @@ class Cli(object):
     except:
       pass
     docker('stop', *cids)
+
+  def cmd_ssh(self, argv):
+    with SshTunnel(argv[0]):
+      raw_input("ssh tunnel open; press enter to close")
 
   def cmd_cleanup(self, argv):
     with SshTunnel(argv[0]):
