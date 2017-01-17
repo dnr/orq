@@ -7,7 +7,7 @@ things:
 
 - Pushes locally-built images to a server (without messing with registries).
 - Acts as a process monitor for running docker containers on a server.
-- Automatically configures a proxy (hipache) to point to those containers.
+- Automatically configures a proxy (nginx) to point to those containers.
 
 It's intended for sharing small servers among small numbers of apps packaged in
 separate containers. It's not intended for managing large numbers of servers.
@@ -37,7 +37,7 @@ $ ssh server.com start orq
 ```
 
 This will start the orq daemon, which will then pull, build, and run a couple of
-containers, one for hipache, and one for a private registry.
+containers, one for nginx, and one for a private registry.
 
 ```
 $ cd myapp
@@ -50,7 +50,10 @@ $ cat myapp.orq
   "dockerdir": ".",
   "domain": "myapp.com",
   "http_port": 3000,
-  "host": "server.com"
+  "host": "server.com",
+  "ssl_cert": "path/to/my.chained.crt",
+  "ssl_key": "path/to/my.key",
+  "force_ssl": true
 }]
 $ ./orq run myapp.orq
 ```
@@ -63,7 +66,7 @@ The `run` command will do the following:
   server, over the ssh tunnel.
 - Contact the orq daemon and tell it to [re]start the image.
 - The daemon will start the new image in a new container.
-- Then it will update the hipache config to point `myapp.com` to port 3000 on
+- Then it will update the nginx config to point `myapp.com` to port 3000 on
   the new container.
 - Then it will take down the old container.
 - The orq daemon checks that all known containers are running every ten seconds,
@@ -80,8 +83,8 @@ keys:
   replace which others.
 - `dockerdir`: The directory containing the Dockerfile for this task. If
   missing, the build step will be skipped.
-- `domain`: The domain to register as a virtual host for hipache. If missing,
-  don't mess with hipache.
+- `domain`: The domain to register as a virtual host for nginx. If missing,
+  don't mess with nginx.
 - `http_port`: The port the container process is listening on.
 - `host`: The server that this task should run on.
 - `volumes`: A list of volumes (see below).
@@ -95,10 +98,14 @@ keys:
   new container (default: 1).
 - `down_wait_time`: How long to wait (seconds) after directing traffic away
   from an old container before stopping it (default: 1).
+- `ssl_cert`: Path to an ssl cert (nginx chained form expected).
+- `ssl_key`: Path to an ssl key.
+- `force_ssl`: If true, add a 301 redirect in nginx from http to https for this
+  domain. Otherwise send all traffic to the service.
 
 Don't use this:
 
-- `exposed_ports`: Expose public ports. The intention is for hipache to be the
+- `exposed_ports`: Expose public ports. The intention is for nginx to be the
   only public port, and everything else to be proxied through there.
 
 
@@ -132,7 +139,17 @@ CLI
 
 `orq run myapp.orq` runs all tasks in the file as described above.
 
+`orq run myapp.orq foo bar` runs tasks that contain the strings `foo` or `bar` in their names.
+
 `orq stop myapp.orq` stops all tasks in the file.
+
+`orq stop myapp.orq foo bar` stops tasks that contain the strings `foo` or `bar` in their names.
+
+`orq upload_cert myapp.orq` copies the ssl cert (and optionally key) to the
+server for inclusion in the nginx config. If the key is readable, push the cert
+and key. Otherwise push only the cert. This is the only command that touches the
+cert and key files, so you're free to leave them encrypted during normal
+operation.
 
 `orq cleanup server.com` cleans up unused containers and images on the server.
 
@@ -158,13 +175,11 @@ Cons:
 TODO
 ====
 
-- SSL
 - Easy backups of specific volumes
 - Image build dependencies (images depending on intermediate images)
 - Running multiple copies of a task
-- Log rotation for hipache?
+- Log rotation for nginx?
 - Links? (unix sockets in shared directories are easier)
-- Allow switching nginx, etc. for hipache
 
 
 
