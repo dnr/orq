@@ -117,6 +117,7 @@ wwWKvZWQsZfIFJbSqh/oNuZTivzW3o5XulOU78YD4BTanVvbC0TkMGmDHT+oOMq5
 -----END PRIVATE KEY-----
 '''
 
+CRASH_LOG_VOL = 'crash_logs'
 
 class DockerError(Exception): pass
 class InspectError(DockerError): pass
@@ -149,6 +150,17 @@ def inspect(thing, *keys):
     return data
   except (DockerError, IndexError, KeyError, TypeError):
     raise InspectError
+
+def capture_logs(taskname, cid):
+  time_cid = time.strftime('%Y%m%d-%H%M') + '-' + cid[:8]
+  dir = os.path.join(volume_path(CRASH_LOG_VOL), taskname, time_cid)
+  if not os.path.isdir(dir): os.makedirs(dir)
+  with open(os.path.join(dir, 'inspect'), 'wb') as f:
+    subprocess.call(['docker', 'inspect', cid], stdout=f)
+  with open(os.path.join(dir, 'stdout'), 'wb') as out, \
+       open(os.path.join(dir, 'stderr'), 'wb') as err:
+    args = ['docker', 'logs', '--tail=1000', cid]
+    subprocess.call(args, stdout=out, stderr=err)
 
 def ipaddr_of(cid):
   return inspect(cid, 'NetworkSettings', 'IPAddress')
@@ -433,11 +445,14 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     with ServerState() as st:
       for task in st.data['tasks']:
         cid = task['cid']
-        try:
-          if cid and inspect(cid, 'State', 'Running'):
-            continue
-        except InspectError:
-          pass
+        if cid:
+          try:
+            if inspect(cid, 'State', 'Running'):
+              continue
+          except InspectError:
+            pass
+          # old container probably crashed
+          capture_logs(task['task']['name'], cid)
         self.run_task(st, task['task'])
         st.save()
 
