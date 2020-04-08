@@ -674,35 +674,6 @@ class Cli(object):
       with SshTunnel(host):
         print_json(do_client({'op': 'stop', 'task': task}))
 
-  def cmd_local(self, argv):
-    tasks = self.load_taskfile(argv)
-    cids = []
-    urls = []
-    for task in tasks:
-      task.update(task.get('local', {}))
-
-      if 'dockerdir' in task:
-        dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
-        image = image_in_registry(task['name'])
-        docker('build', '-t', image, dockerdir)
-
-      ServerHandler.ensure_host_volumes(task)
-      args = ServerHandler.construct_docker_args(task)
-      cid = docker('run', *args).strip()[:12]
-      cids.append(cid)
-      print 'started %s' % task['name']
-      if 'http_port' in task:
-        urls.append('http://%s:%d/' % (ipaddr_of(cid), task['http_port']))
-    try:
-      print
-      for url in urls:
-        print url
-      print
-      raw_input("press enter to stop containers\n")
-    except:
-      pass
-    docker('stop', *cids)
-
   def cmd_ssh(self, argv):
     with SshTunnel(argv[0]):
       raw_input("ssh tunnel open; press enter to close")
