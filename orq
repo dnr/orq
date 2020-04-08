@@ -30,7 +30,7 @@ FORCE_SSL = 'FORCE_SSL'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 5
+VERSION = 6
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -70,17 +70,13 @@ REGISTRY_TASK = {
 NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
-FROM ubuntu:trusty
-RUN date='Sun Mar 27 13:24:15 PDT 2016'
-RUN apt-get -yq update
-RUN apt-get -yq upgrade
-RUN apt-get -yq install nginx
-EXPOSE 8000
-EXPOSE 8443
-VOLUME /etc/nginx
-VOLUME /var/log/nginx
-VOLUME /certs
-CMD ["nginx"]
+FROM ubuntu:18.04
+ARG date=2020-04-07
+ARG DEBIAN_FRONTEND=noninteractive
+RUN apt-get -y update && apt-get -y upgrade && apt-get -y install nginx
+EXPOSE 8000 8443
+VOLUME /etc/nginx /var/log/nginx /certs
+CMD nginx
 ''',
 
 }
@@ -317,22 +313,9 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # migrations:
-      if self.data['version'] == 1:
-        self.replace_task('__hipache__', NGINX_TASK)
-        self.data['version'] = 2
-
-      if self.data['version'] == 2:
+      if self.data['version'] == 5:
         self.replace_task('__nginx__', NGINX_TASK)
-        self.data['version'] = 3
-
-      if self.data['version'] == 3:
-        self.replace_task('__nginx__', NGINX_TASK)
-        self.replace_task('__registry__', REGISTRY_TASK)
-        self.data['version'] = 4
-
-      if self.data['version'] == 4:
-        self.replace_task('__nginx__', NGINX_TASK)
-        self.data['version'] = 5
+        self.data['version'] = 6
 
       # future migrations:
       # if self.data['version'] == ...
