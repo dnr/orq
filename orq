@@ -49,6 +49,7 @@ NGINX_TASK = {
       {'host': PUBLIC_SSL_PORT, 'container': 8443, 'public': True},
       ],
     'stop_old_first': True,
+    'caps': 'setuid setgid chown dac_override'.split(),
     }
 
 REGISTRY_TASK_NAME = '__registry__'
@@ -359,6 +360,10 @@ class ServerHandler(SocketServer.StreamRequestHandler):
     args = []
 
     args.append('-d')
+
+    args.append('--cap-drop=all')
+    for cap in task.get('caps', []):
+      args.append('--cap-add='+cap)
 
     for vol in task.get('volumes', []):
       args.append('-v')
