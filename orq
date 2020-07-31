@@ -71,8 +71,8 @@ REGISTRY_TASK = {
 NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': r'''
-FROM ubuntu:18.04
-ARG date=2020-04-07
+FROM ubuntu:20.04
+ARG date=2020-07-31
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && apt-get -y upgrade && apt-get -y install nginx
 EXPOSE 8000 8443
@@ -536,12 +536,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       ServerHandler.hup_nginx(st)
 
   def op_cleanup(self, data):
-    subprocess.call('''
-      # delete all non-running container
-      docker ps -a | awk '/Exit/ {print $1}' | xargs -r docker rm
-      # delete unused images
-      docker images | awk '/<none>/ {print $3}' | xargs -r docker rmi
-    ''', shell=True)
+    subprocess.call('docker system prune -a -f', shell=True)
 
 
 def build_local_image(sources, name):
@@ -549,7 +544,7 @@ def build_local_image(sources, name):
   os.chdir(tmpdir)
   for k, v in sources.items():
     open(k, 'w').write(v)
-  docker('build', '--rm', '-t', name, '.')
+  docker('build', '-t', name, '.')
   os.chdir('/')
   shutil.rmtree(tmpdir)
 
