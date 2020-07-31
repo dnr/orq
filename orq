@@ -1,9 +1,9 @@
-#!/usr/bin/python
+#!/usr/bin/python3 -u
 # vim: sw=2 et
 
 __author__ = "David Reiss <davidn@gmail.com>"
 
-import os, sys, json, socket, SocketServer, threading, subprocess, time
+import os, sys, json, socket, socketserver, threading, subprocess, time
 import tempfile, shutil, traceback
 
 IS_ROOT = os.getuid() == 0
@@ -135,9 +135,9 @@ def docker(*argv):
   argv = list(argv)
   argv[0:0] = ['docker']
   if DEBUG:
-    print '+', ' '.join(argv)
+    print('+', ' '.join(argv))
   try:
-    return subprocess.check_output(argv)
+    return subprocess.check_output(argv).decode('utf-8')
   except subprocess.CalledProcessError:
     raise DockerError
 
@@ -174,20 +174,20 @@ def image_in_registry(image):
 def do_client(data):
   s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
   s.connect(ORQ_ADDR)
-  s.sendall(json.dumps(data))
+  s.sendall(json.dumps(data).encode('utf-8'))
   s.shutdown(socket.SHUT_WR)
   return json.load(s.makefile('r'))
 
 def print_json(out):
   json.dump(out, sys.stdout, sort_keys=True,
       indent=4, separators=(',', ': '))
-  print
+  print()
 
 def get_public_ip(cache=[]):
   # TODO: this needs to be more robust
   if not cache:
-    cmd = r"ifconfig eth0 | sed -ne 's/.* inet addr:\([0-9.]*\).*/\1/p'"
-    output = subprocess.check_output(cmd, shell=True)
+    cmd = r"ip addr show eth0 | sed -ne 's/.* inet \([0-9.]*\).*/\1/p'"
+    output = subprocess.check_output(cmd, shell=True).decode('utf-8')
     cache.append(output.strip())
   return cache[0]
 
@@ -349,18 +349,18 @@ class ServerState(object):
     self.save()
 
 
-class ServerHandler(SocketServer.StreamRequestHandler):
+class ServerHandler(socketserver.StreamRequestHandler):
   def handle(self):
     try:
       data = json.load(self.rfile)
       result = getattr(self, 'op_' + data['op'])(data)
       out = {'success': True, 'result': result}
-      json.dump(out, self.wfile)
+      self.wfile.write(json.dumps(out).encode('utf-8'))
     except:
       tb = traceback.format_exc()
       sys.stderr.write(tb + '\n')
       out = {'success': False, 'error': tb}
-      json.dump(out, self.wfile)
+      self.wfile.write(json.dumps(out).encode('utf-8'))
 
   @staticmethod
   def get_image_name(task):
@@ -410,7 +410,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
       path = volume_path(vol['id'])
       if not os.path.isdir(path):
         os.makedirs(path)
-        os.chmod(path, 01777)
+        os.chmod(path, 0o1777)
 
   @staticmethod
   def reconfigure_proxy(st):
@@ -432,7 +432,7 @@ class ServerHandler(SocketServer.StreamRequestHandler):
 
     fn = os.path.join(volume_path(NGINX_CONFIG_VOL), 'nginx.conf')
     open(fn, 'w').write(cfg)
-    os.chmod(fn, 0644)
+    os.chmod(fn, 0o644)
 
     ServerHandler.hup_nginx(st)
 
@@ -557,7 +557,7 @@ def run_daemon():
     build_local_image(NGINX_IMAGE_SOURCES, NGINX_IMAGE_NAME)
 
   # set up for daemon
-  os.umask(077)
+  os.umask(0o077)
   for d in ORQ_ROOT, VOL_ROOT:
     if not os.path.isdir(d):
       os.makedirs(d)
@@ -573,7 +573,7 @@ def run_daemon():
   scr.setDaemon(True)
   scr.start()
 
-  SocketServer.TCPServer(ORQ_ADDR, ServerHandler).serve_forever()
+  socketserver.TCPServer(ORQ_ADDR, ServerHandler).serve_forever()
 
 
 def install_on(host):
@@ -638,7 +638,7 @@ class Cli(object):
   def load_taskfile(argv):
     tasks = json.load(open(argv[0], 'r'))
     if len(argv) > 1:
-      tasks = filter(Cli.task_matcher(argv[1:]), tasks)
+      tasks = list(filter(Cli.task_matcher(argv[1:]), tasks))
     return tasks
 
   @staticmethod
@@ -657,7 +657,7 @@ class Cli(object):
   def cmd_run(self, argv):
     tasks = self.load_taskfile(argv)
 
-    print "==== BUILDING"
+    print("==== BUILDING")
     for task in tasks:
       if 'dockerdir' in task:
         dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
@@ -669,16 +669,16 @@ class Cli(object):
     byhost = {}
     for task in tasks:
       byhost.setdefault(task['host'], []).append(task)
-    byhost = byhost.items()
+    byhost = list(byhost.items())
 
-    print "==== PUSHING"
+    print("==== PUSHING")
     for host, tasks in byhost:
       with SshTunnel(host):
         for task in tasks:
           if 'dockerdir' in task:
             docker('push', image_in_registry(task['name']))
 
-    print "==== RUNNING"
+    print("==== RUNNING")
     for host, tasks in byhost:
       with SshTunnel(host):
         for task in tasks:
@@ -708,7 +708,7 @@ class Cli(object):
 
   def cmd_ssh(self, argv):
     with SshTunnel(argv[0]):
-      raw_input("ssh tunnel open; press enter to close")
+      input("ssh tunnel open; press enter to close")
 
   def cmd_cleanup(self, argv):
     with SshTunnel(argv[0]):
