@@ -576,6 +576,32 @@ def run_daemon():
   SocketServer.TCPServer(ORQ_ADDR, ServerHandler).serve_forever()
 
 
+def install_on(host):
+  if '@' not in host: host = 'root@' + host
+  localpath = '/usr/local/bin/orq'
+  subprocess.check_call(['scp', '-p', __file__, host+':'+localpath])
+  subprocess.check_call(['ssh', host, localpath, 'local_install'])
+
+
+def local_install():
+  with open('/etc/systemd/system/orq.service', 'w') as f:
+    f.write("""\
+[Unit]
+After=docker.service
+
+[Service]
+ExecStart=ORQ daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+""".replace('ORQ', os.path.abspath(__file__)))
+  subprocess.check_call("""
+    systemctl daemon-reload && \
+    systemctl enable orq && \
+    systemctl start orq""", shell=True)
+
+
 class SshTunnel(object):
   def __init__(self, host):
     self.host = host
@@ -621,6 +647,12 @@ class Cli(object):
 
   def cmd_daemon(self, argv):
     run_daemon()
+
+  def cmd_install(self, argv):
+    install_on(argv[0])
+
+  def cmd_local_install(self, argv):
+    local_install()
 
   def cmd_run(self, argv):
     tasks = self.load_taskfile(argv)

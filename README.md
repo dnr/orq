@@ -5,16 +5,15 @@ Intro
 orq is a really really simple docker-based server manager. It does three main
 things:
 
-- Pushes locally-built images to a server (without messing with registries).
+- Pushes locally-built images to a server (automatically handling registries).
 - Acts as a process monitor for running docker containers on a server.
 - Automatically configures a proxy (nginx) to point to those containers.
 
 It's intended for sharing small servers among small numbers of apps packaged in
 separate containers. It's not intended for managing large numbers of servers.
 
-The `orq` script is written in Python and is completely self-contained (besides
-an upstart config to keep the daemon running), so it's very simple to install
-(or uninstall).
+The `orq` script is written in Python and is completely self-contained, so it's
+very simple to install (or uninstall).
 
 
 Quick start
@@ -25,19 +24,14 @@ First, set up docker on a server. You're on your own here.
 Then:
 
 ```
-$ ./install server.com
+$ ./orq install server
 ```
 
-This will copy the script and upstart config, and make sure python-redis is
-installed. The script currently assumes something Ubuntu-ish. Do it manually if
-you want.
-
-```
-$ ssh server.com start orq
-```
-
-This will start the orq daemon, which will then pull, build, and run a couple of
+This will copy the script and have it set up a systemd service, and
+automatically start. This will then pull, build, and run a couple of
 containers, one for nginx, and one for a private registry.
+
+The script currently assumes something Ubuntu-ish. Do it manually if you want.
 
 ```
 $ cd myapp
@@ -50,7 +44,7 @@ $ cat myapp.orq
   "dockerdir": ".",
   "domain": "myapp.com",
   "http_port": 3000,
-  "host": "server.com",
+  "host": "server",
   "ssl_cert": "path/to/my.chained.crt",
   "ssl_key": "path/to/my.key",
   "force_ssl": true
@@ -61,7 +55,7 @@ $ ./orq run myapp.orq
 The `run` command will do the following:
 
 - Do a `docker build` of the directory given as `dockerdir`.
-- ssh to `server.com` and set up a couple ssh tunnels.
+- ssh to `server` and set up a couple ssh tunnels.
 - Do a `docker push` to push the newly-built image to the registry on the
   server, over the ssh tunnel.
 - Contact the orq daemon and tell it to [re]start the image.
@@ -165,6 +159,7 @@ Pros:
   works locally, it'll work on the server.
 - All communication is over ssh.
 - Zero-downtime deploys.
+- Container logs are automatically saved to a volume on crash/restart.
 
 Cons:
 
@@ -179,14 +174,13 @@ TODO
 - Image build dependencies (images depending on intermediate images)
 - Running multiple copies of a task
 - Log rotation for nginx?
-- Links? (unix sockets in shared directories are easier)
 
 
 
 License: MIT
 ============
 
-Copyright (C) 2014 David Reiss
+Copyright (C) 2014-2020 David Reiss
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in

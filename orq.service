@@ -1,9 +1,0 @@
-[Unit]
-After=docker.service
-
-[Service]
-ExecStart=/root/orq daemon
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
