@@ -204,14 +204,6 @@ def print_json(out):
       indent=4, separators=(',', ': '))
   print()
 
-def get_public_ip(cache=[]):
-  # TODO: this needs to be more robust
-  if not cache:
-    cmd = r"ip addr show eth0 | sed -ne 's/.* inet \([0-9.]*\).*/\1/p'"
-    output = subprocess.check_output(cmd, shell=True).decode('utf-8')
-    cache.append(output.strip())
-  return cache[0]
-
 def write_cert_key(domain, cert, key):
   cert_path, key_path = cert_key_paths(domain)
   open(cert_path, 'w').write(cert)
@@ -408,12 +400,12 @@ class ServerHandler(socketserver.StreamRequestHandler):
     for port in task.get('exposed_ports', []):
       host = port['host']
       container = port['container']
+      args.append('-p')
       if port.get('public'):
-        expose_ip = get_public_ip()
+        args.append('%s:%s' % (host, container))
       else:
         expose_ip = LOCALHOST
-      args.append('-p')
-      args.append('%s:%s:%s' % (expose_ip, host, container))
+        args.append('%s:%s:%s' % (expose_ip, host, container))
 
     for k, v in task.get('env', {}).items():
       args.append('-e')
