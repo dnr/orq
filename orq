@@ -622,9 +622,10 @@ class SshTunnel(object):
   def __enter__(self):
     args = [
         'ssh',
-        self.host,
         '-L', 'localhost:%d:127.0.0.1:%d' % (ORQ_PORT, ORQ_PORT),
         '-L', 'localhost:%d:127.0.0.1:%d' % (REG_PORT, REG_PORT),
+        '-o', 'ControlPath none',
+        self.host,
         'sleep 1d',
         ]
     self.proc = subprocess.Popen(args,
