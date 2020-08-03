@@ -4,7 +4,7 @@
 __author__ = "David Reiss <davidn@gmail.com>"
 
 import os, sys, json, socket, socketserver, threading, subprocess, time
-import tempfile, shutil, traceback
+import tempfile, shutil, traceback, urllib.request
 
 IS_ROOT = os.getuid() == 0
 
@@ -142,6 +142,8 @@ CRASH_LOG_VOL = 'crash_logs'
 
 class DockerError(Exception): pass
 class InspectError(DockerError): pass
+
+def ignore(_): pass
 
 def volume_path(vid):
   return os.path.join(VOL_ROOT, vid)
@@ -387,6 +389,7 @@ class ServerHandler(socketserver.StreamRequestHandler):
     args = []
 
     args.append('-d')
+    args.append('--restart=unless-stopped')
 
     args.append('--cap-drop=all')
     for cap in task.get('caps', []):
@@ -471,9 +474,27 @@ class ServerHandler(socketserver.StreamRequestHandler):
         self.run_task(st, task['task'])
         st.save()
 
-  def run_task(self, st, task):
+  def health_check(self, task, cid, maxwait=30):
+    port = task['http_port']
+    path = task['health_check']
+    if not path.startswith('/'): path = '/' + path
+    for _ in range(maxwait):
+      time.sleep(1)
+      ip = ipaddr_of(cid)
+      if not ip: continue
+      url = f"http://{ip}:{port}{path}"
+      try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+          if r.getcode() == 200:
+            return True
+      except:
+        pass
+    return False
+
+  def run_task(self, st, task, log=ignore):
     # pull latest first
     if not task.get('raw_image_name'):
+      log("pulling")
       docker('pull', ServerHandler.get_image_name(task))
 
     stop_old_first = task.get('stop_old_first', False)
@@ -489,8 +510,10 @@ class ServerHandler(socketserver.StreamRequestHandler):
     tdata = st.find_tdata_by_name(task['name'])
     if not tdata:
       tdata = st.add_task(task)
+      log("adding new task")
     tdata['task'] = task
     old_cid = tdata['old_cid'] = tdata['cid']
+    log(f"old cid was {old_cid}")
 
     # check if the container is already running the new image
     try:
@@ -498,50 +521,68 @@ class ServerHandler(socketserver.StreamRequestHandler):
         running_image = inspect(old_cid, 'Image')
         new_image = inspect(self.get_image_name(task), 'Id')
         if running_image == new_image:
+          log("image is identical")
           return
     except InspectError:
       pass
 
     # take down old thing (if before)
     if stop_old_first and old_cid:
+      log("stopping old first")
       try: docker('stop', old_cid)
       except DockerError: pass
 
     # run new thing
     args = self.construct_docker_args(task)
-    tdata['cid'] = docker('run', *args).strip()
+    new_cid = tdata['cid'] = docker('run', *args).strip()
 
-    time.sleep(task.get('up_wait_time', 1))
+    if 'health_check' in task and 'http_port' in task:
+      if not self.health_check(task, new_cid):
+        # failed health check, roll back
+        log("failed health check")
+        docker('stop', new_cid)
+        tdata['cid'] = old_cid
+        return
+    else:
+      time.sleep(task.get('up_wait_time', 1))
 
     # point nginx to new thing
     if 'domain' in task:
+      log("reconfiguring proxy")
       ServerHandler.reconfigure_proxy(st)
 
     # take down old thing (if after)
     if not stop_old_first and old_cid:
+      log("stopping old")
       time.sleep(task.get('down_wait_time', 1))
       docker('stop', old_cid)
 
   def op_ping(self, data):
-    return None
+    return 'pong'
 
   def op_run(self, data):
     task = data['task']
     with ServerState() as st:
-      self.run_task(st, task)
+      log = []
+      self.run_task(st, task, log.append)
+      return log
 
   def op_stop(self, data):
     name = data['task']['name']  # only pull out name, ignore rest
     with ServerState() as st:
       tdata = st.find_tdata_by_name(name)
-      if tdata:
-        task = tdata['task']
-        cid = tdata['cid']
-        if cid:
-          docker('stop', cid)
-        st.data['tasks'].remove(tdata)
-        if 'domain' in task:
-          ServerHandler.reconfigure_proxy(st)
+      if not tdata:
+        return 'not found'
+      task = tdata['task']
+      cid = tdata['cid']
+      if cid:
+        stop = docker('stop', cid)
+      st.data['tasks'].remove(tdata)
+      reconfigured = False
+      if 'domain' in task:
+        reconfigured = True
+        ServerHandler.reconfigure_proxy(st)
+      return {'stop': stop, 'reconfigured': reconfigured}
 
   def op_upload_cert(self, data):
     write_cert_key(data['task']['domain'], data['cert'], data['key'])
@@ -549,7 +590,7 @@ class ServerHandler(socketserver.StreamRequestHandler):
       ServerHandler.hup_nginx(st)
 
   def op_cleanup(self, data):
-    subprocess.call('docker system prune -a -f', shell=True)
+    return subprocess.getoutput('docker system prune -a -f')
 
 
 def build_local_image(sources, name):
