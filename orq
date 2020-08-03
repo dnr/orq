@@ -30,7 +30,7 @@ FORCE_SSL = 'FORCE_SSL'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 6
+VERSION = 7
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -77,7 +77,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && apt-get -y upgrade && apt-get -y install nginx
 EXPOSE 8000 8443
 VOLUME /etc/nginx /var/log/nginx /certs
-CMD nginx
+CMD ["nginx"]
 ''',
 
 }
@@ -349,9 +349,9 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # migrations:
-      if self.data['version'] == 5:
+      if self.data['version'] == 6:
         self.replace_task('__nginx__', NGINX_TASK)
-        self.data['version'] = 6
+        self.data['version'] = 7
 
       # future migrations:
       # if self.data['version'] == ...
