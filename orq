@@ -50,6 +50,7 @@ NGINX_TASK = {
       ],
     'stop_old_first': True,
     'caps': 'setuid setgid chown dac_override'.split(),
+    'restart_policy': 'unless-stopped',
     }
 
 REGISTRY_TASK_NAME = '__registry__'
@@ -388,7 +389,8 @@ class ServerHandler(socketserver.StreamRequestHandler):
     args = []
 
     args.append('-d')
-    args.append('--restart=unless-stopped')
+    if 'restart_policy' in task:
+      args.append('--restart='+task['restart_policy'])
 
     args.append('--cap-drop=all')
     for cap in task.get('caps', []):
