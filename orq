@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -u
+#!/usr/bin/env -S python3 -u
 # vim: sw=2 et
 
 __author__ = "David Reiss <davidn@gmail.com>"
@@ -26,11 +26,12 @@ LOCALHOST = '127.0.0.1'
 ORQ_ADDR = (LOCALHOST, ORQ_PORT)
 CHECK_INTERVAL = 10
 FORCE_SSL = 'FORCE_SSL'
+USE_ACME = 'USE_ACME'
 
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 7
+VERSION = 8
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -71,23 +72,49 @@ REGISTRY_TASK = {
 
 NGINX_IMAGE_SOURCES = {
 
-'Dockerfile': r'''
+'Dockerfile': '''
 FROM ubuntu:20.04
-ARG date=2020-07-31
+ARG date=2020-12-10
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get -y update && apt-get -y upgrade && apt-get -y install nginx
+RUN apt-get -y update && apt-get -y upgrade && \
+  apt-get -y install nginx acmetool ca-certificates
 EXPOSE 8000 8443
 VOLUME /etc/nginx /var/log/nginx /certs
+ENV ACME_STATE_DIR=/certs/acmetool
+COPY ./requestcerts /usr/bin/requestcerts
+COPY ./reload /etc/acme/hooks/reload
+COPY ./dummy.crt /etc/ssl/dummy/dummy.crt
+COPY ./dummy.key /etc/ssl/dummy/dummy.key
 CMD ["nginx"]
 ''',
 
-}
+'requestcerts': '''\
+#!/bin/sh
+set -e
+cd /certs
+for domain; do
+  [ -e "${domain}.crt" ] || ln -snf "/etc/ssl/dummy/dummy.crt" "${domain}.crt"
+  [ -e "${domain}.key" ] || ln -snf "/etc/ssl/dummy/dummy.key" "${domain}.key"
+  [ -e "acmetool/live/${domain}" ] || acmetool --batch want --no-reconcile "${domain}"
+done
+''',
 
+'reload': '''\
+#!/bin/sh
+set -e
+cd /certs/acmetool/live
+for domain in *; do
+  test -e "${domain}" || continue
+  ln -snf "acmetool/live/${domain}/fullchain" "/certs/${domain}.crt"
+  ln -snf "acmetool/live/${domain}/privkey" "/certs/${domain}.key"
+done
+kill -HUP 1
+''',
 
 # We want to set a default server for nginx so that requests without a host get
 # a 404. To do that over ssl, we need to present some cert. So here's a cert.
 # generate with: openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 3650 -nodes -subj /CN=dummy
-DUMMY_CERT = '''\
+'dummy.crt': '''\
 -----BEGIN CERTIFICATE-----
 MIIDATCCAemgAwIBAgIUSZgaCILYRk3AIJZkHn/4SndptEEwDQYJKoZIhvcNAQEL
 BQAwEDEOMAwGA1UEAwwFZHVtbXkwHhcNMjAwNzMxMjIwNzUzWhcNMzAwNzI5MjIw
@@ -107,8 +134,9 @@ v2qldY0c+CwHKWV02tCWlPT2gLt/o0wwj6dsSCZ4sdC4mb1TMN1ksUTVRyV1PO65
 sNegwuaxK/BuMgi+6845Ed+CPKK1fijJ4qEODKyGPVksv0vd1iCkKkC/DA5PgYg5
 ZyTRzFo=
 -----END CERTIFICATE-----
-'''
-DUMMY_KEY = '''\
+''',
+
+'dummy.key': '''\
 -----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC6ykTxvHq5/1Ok
 IuPn9TmL05YNMhFX+yvyUY+Yhjif9QTS5MNKZxgq1LnrBvZxDT8XfOEcftpBucSZ
@@ -137,7 +165,9 @@ ES2xtTEgu8NSz2vYvZlKqw/9MBicXQ61ZlwILBL9C90ZKV0t1K3yNhDytgSQhMpB
 3Lkl6zSDh2fPY08Sc9J6bm2Mqa/RGkFb8ao8PrAiSTL8Zbvrr0sDyPzMMyx9V/Vq
 Km84vSFFDk5cGRtU2wFYOIc=
 -----END PRIVATE KEY-----
-'''
+''',
+
+}
 
 CRASH_LOG_VOL = 'crash_logs'
 
@@ -245,6 +275,25 @@ def gen_nginx_config(servers):
 %(proxy)s
         }
       ''' % vars()
+    elif ssl == USE_ACME:
+      return '''
+        server {
+          server_name %(domain)s;
+          listen 8000;
+          location /.well-known/acme-challenge/ {
+            alias /certs/acmetool/challenges/;
+          }
+          location / {
+            return 301 https://$host$request_uri;
+          }
+        }
+        server {
+          server_name %(domain)s;
+          listen 8443 ssl;
+%(sslcerts)s
+%(proxy)s
+        }
+      ''' % vars()
     elif ssl:
       return '''
         server {
@@ -293,8 +342,8 @@ def gen_nginx_config(servers):
       server {
         listen 8000;
         listen 8443 ssl;
-        ssl_certificate /certs/__dummy__.crt;
-        ssl_certificate_key /certs/__dummy__.key;
+        ssl_certificate /etc/ssl/dummy/dummy.crt;
+        ssl_certificate_key /etc/ssl/dummy/dummy.key;
         return 404;
       }
 %(server_blocks)s
@@ -343,9 +392,9 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # migrations:
-      if self.data['version'] == 6:
+      if self.data['version'] == 7:
         self.replace_task('__nginx__', NGINX_TASK)
-        self.data['version'] = 7
+        self.data['version'] = 8
 
       # future migrations:
       # if self.data['version'] == ...
@@ -432,6 +481,7 @@ class ServerHandler(socketserver.StreamRequestHandler):
   @staticmethod
   def reconfigure_proxy(st):
     servers = []
+    acme_domains = []
     for tdata in st.tasks():
       task = tdata['task']
       domain = task.get('domain')
@@ -441,6 +491,9 @@ class ServerHandler(socketserver.StreamRequestHandler):
         cert_path, key_path = cert_key_paths(domain)
         if task.get('force_ssl'):
           ssl = FORCE_SSL
+        elif task.get('use_acme'):
+          ssl = USE_ACME
+          acme_domains.append(domain)
         else:
           ssl = bool(task.get('ssl_cert') and
               os.path.exists(cert_path) and os.path.exists(key_path))
@@ -451,13 +504,27 @@ class ServerHandler(socketserver.StreamRequestHandler):
     open(fn, 'w').write(cfg)
     os.chmod(fn, 0o644)
 
-    ServerHandler.hup_nginx(st)
+    ServerHandler.hup_nginx(st, acme_domains)
 
   @staticmethod
-  def hup_nginx(st):
+  def hup_nginx(st, acmetool_domains=None, force_reconcile=False):
     nginx_cid = st.find_tdata_by_name(NGINX_TASK_NAME)['cid']
-    if nginx_cid:
-      try: docker('kill', '-s', 'HUP', nginx_cid)
+    if not nginx_cid: return
+
+    if acmetool_domains:
+      # mark domains as requsted by acmetool (this sets up dummy certs if we
+      # don't have any yet, so nginx can start)
+      try: docker('exec', nginx_cid, 'requestcerts', *acmetool_domains)
+      except DockerError: pass
+
+    # then reload nginx so it starts serving those domains
+    try: docker('kill', '-s', 'HUP', nginx_cid)
+    except DockerError: pass
+
+    if acmetool_domains or force_reconcile:
+      # now ask acmetool to request all certificates. this might run the reload
+      # hook, which will hup nginx again, but that's ok.
+      try: docker('exec', nginx_cid, 'acmetool', '--batch', 'reconcile')
       except DockerError: pass
 
   def op_check_running(self, data):
@@ -474,6 +541,8 @@ class ServerHandler(socketserver.StreamRequestHandler):
           capture_logs(task['task']['name'], cid)
         self.run_task(st, task['task'])
         st.save()
+      if data.get('reconcile'):
+        ServerHandler.hup_nginx(st, force_reconcile=True)
 
   def health_check(self, task, cid, maxwait=30):
     port = task['http_port']
@@ -504,7 +573,6 @@ class ServerHandler(socketserver.StreamRequestHandler):
 
     # if we're running the proxy, ensure we have a config
     if task['name'] == NGINX_TASK_NAME:
-      write_cert_key('__dummy__', DUMMY_CERT, DUMMY_KEY)
       ServerHandler.reconfigure_proxy(st)
 
     # add to state and get old cid
@@ -599,6 +667,8 @@ def build_local_image(sources, name):
   os.chdir(tmpdir)
   for k, v in sources.items():
     open(k, 'w').write(v)
+    if v.startswith('#!'):
+      os.chmod(k, 0o755)
   docker('build', '-t', name, '.')
   os.chdir('/')
   shutil.rmtree(tmpdir)
@@ -620,8 +690,11 @@ def run_daemon():
 
   def send_check_requests():
     time.sleep(1)
+    next_reconcile = time.time() + 5*86400*1.1040895
     while True:
-      try: do_client({'op': 'check_running'})
+      reconcile = time.time() > next_reconcile
+      if reconcile: next_reconcile = time.time() + 5*86400*1.1040895
+      try: do_client({'op': 'check_running', 'reconcile': reconcile})
       except: pass
       time.sleep(CHECK_INTERVAL)
   scr = threading.Thread(target=send_check_requests)
