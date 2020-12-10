@@ -96,6 +96,7 @@ keys:
 - `ssl_key`: Path to an ssl key.
 - `force_ssl`: If true, add a 301 redirect in nginx from http to https for this
   domain. Otherwise send all traffic to the service.
+- `use_acme`: Request a certificate for this domain with acmetool.
 
 Don't use this:
 
@@ -126,6 +127,16 @@ To use volumes:
 The `container` key is the path to mount the volume inside the container.
 
 orq puts all volumes in `/var/lib/orq/volumes`.
+
+
+ACME
+====
+
+Using ACME (LetsEncrypt) requires a little interactive setup. After the nginx
+image is running, do `docker exec -it <nginx container> bash`, then `acmetool
+quickstart`. Choose "webroot", enter `/certs/acmetool/challenges/` for the
+webroot challenge directory, and say no to the cron job. Then you can run a
+service with `'use_acme': True`.
 
 
 CLI
