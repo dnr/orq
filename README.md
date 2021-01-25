@@ -75,8 +75,14 @@ keys:
 
 - `name`: An identifying name for the app. This controls which containers
   replace which others.
-- `dockerdir`: The directory containing the Dockerfile for this task. If
-  missing, the build step will be skipped.
+- `dockerdir`: The directory containing the Dockerfile for this task.
+  If both this and `nix-build` are missing, the build step will be skipped.
+- `nix-build`: If present, build a docker image using Nix. The value of this
+  key is passed on the `nix-build` command line. The Nix build must use
+  `dockerTools.streamLayeredImage`, and the result will be piped to `docker
+  load` to create the image. For example, `"nix-build": "-A docker"` will build
+  the docker image specified by the `docker` attribute in `default.nix` in the
+  current directory.
 - `domain`: The domain to register as a virtual host for nginx. If missing,
   don't mess with nginx.
 - `http_port`: The port the container process is listening on.

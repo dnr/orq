@@ -794,6 +794,14 @@ class Cli(object):
         regimage = image_in_registry(image)
         docker('build', '-t', image, dockerdir)
         docker('tag', image, regimage)
+      elif 'nix-build' in task:
+        out = subprocess.check_output(
+            "$(nix-build --no-out-link %s) | docker load" % task['nix-build'],
+            shell=True).decode().strip()
+        assert out.startswith('Loaded image: ')
+        image = out.replace('Loaded image: ', '')
+        regimage = image_in_registry(task['name'])
+        docker('tag', image, regimage)
 
     byhost = {}
     for task in tasks:
@@ -804,7 +812,7 @@ class Cli(object):
     for host, tasks in byhost:
       with SshTunnel(host):
         for task in tasks:
-          if 'dockerdir' in task:
+          if 'dockerdir' in task or 'nix-build' in task:
             docker('push', image_in_registry(task['name']))
 
     print("==== RUNNING")
