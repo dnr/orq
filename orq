@@ -445,6 +445,8 @@ class ServerHandler(socketserver.StreamRequestHandler):
     for cap in task.get('caps', []):
       args.append('--cap-add='+cap)
 
+    # TODO: add --security-opt=no-new-privileges, after testing it works
+
     for vol in task.get('volumes', []):
       args.append('-v')
       host = volume_path(vol['id'])
@@ -455,6 +457,8 @@ class ServerHandler(socketserver.StreamRequestHandler):
       container = port['container']
       args.append('-p')
       if port.get('public'):
+        # TODO: consider running nginx with --network=host for best performance.
+        # see: http://rabexc.org/posts/docker-networking
         args.append('%s:%s' % (host, container))
       else:
         expose_ip = LOCALHOST
@@ -761,14 +765,41 @@ class SshTunnel(object):
 
 class Cli(object):
   def handle(self, argv):
-    return getattr(self, 'cmd_' + argv[0])(argv[1:])
+    try:
+      cmd = getattr(self, 'cmd_' + argv[0])
+    except (IndexError, AttributeError):
+      print("Available commands:\n ", ', '.join(
+        c[4:] for c in dir(self) if c.startswith('cmd_')))
+      sys.exit(1)
+    try:
+      return cmd(argv[1:])
+    except Exception as e:
+      print(str(e))
+      sys.exit(1)
 
   @staticmethod
   def load_taskfile(argv):
-    tasks = json.load(open(argv[0], 'r'))
-    if len(argv) > 1:
-      tasks = list(filter(Cli.task_matcher(argv[1:]), tasks))
+    if len(argv) > 0 and argv[0].endswith('.orq'):
+      orqfile = argv.pop(0)
+    else:
+      orqfile = Cli.find_orqfile()
+    dir, base = os.path.split(os.path.abspath(orqfile))
+    os.chdir(dir)
+    tasks = json.load(open(base))
+    if len(argv) > 0:
+      tasks = list(filter(Cli.task_matcher(argv), tasks))
     return tasks
+
+  @staticmethod
+  def find_orqfile():
+    while os.getcwd() != '/':
+      orqs = [f for f in os.listdir() if f.endswith('.orq')]
+      if len(orqs) == 1:
+        return orqs[0]
+      elif len(orqs) > 1:
+        raise Exception("Found multiple .orq files")
+      os.chdir('..')
+    raise Exception("Can't find .orq file")
 
   @staticmethod
   def task_matcher(words):
@@ -789,7 +820,7 @@ class Cli(object):
     print("==== BUILDING")
     for task in tasks:
       if 'dockerdir' in task:
-        dockerdir = os.path.join(os.path.dirname(argv[0]), task['dockerdir'])
+        dockerdir = task['dockerdir']
         image = task['name']
         regimage = image_in_registry(image)
         docker('build', '-t', image, dockerdir)
@@ -828,8 +859,8 @@ class Cli(object):
         continue
       host = task['host']
       with SshTunnel(host):
-        cert_file = os.path.join(os.path.dirname(argv[0]), task['ssl_cert'])
-        key_file  = os.path.join(os.path.dirname(argv[0]), task['ssl_key'])
+        cert_file = task['ssl_cert']
+        key_file  = task['ssl_key']
         cert = open(cert_file).read()
         try: key = open(key_file).read()
         except IOError: key = None
