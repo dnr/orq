@@ -31,7 +31,7 @@ USE_ACME = 'USE_ACME'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 8
+VERSION = 9
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -42,7 +42,7 @@ NGINX_TASK = {
     'name': NGINX_TASK_NAME,
     'raw_image_name': NGINX_IMAGE_NAME,
     'volumes': [
-      {'id': NGINX_CONFIG_VOL, 'container': '/etc/nginx'},
+      {'id': NGINX_CONFIG_VOL, 'container': '/conf'},
       {'id': NGINX_CERTS_VOL, 'container': '/certs'},
       {'id': NGINX_STATIC_VOL, 'container': '/static'},
       {'id': 'proxy_logs', 'container': '/var/log/nginx'},
@@ -75,19 +75,27 @@ REGISTRY_TASK = {
 NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': '''
-FROM ubuntu:20.04
-ARG date=2020-12-10
+FROM ubuntu:20.04 as base
+ARG date=2021-04-11
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && apt-get -y upgrade && \
   apt-get -y install nginx acmetool ca-certificates
+
+FROM base AS ngxmod
+COPY ./ngxmod.sh /tmp/ngxmod.sh
+RUN /tmp/ngxmod.sh
+
+FROM base
+COPY --from=ngxmod /ngx_http_brotli_static_module.so /usr/lib/nginx/modules/ngx_http_brotli_static_module.so
+
 EXPOSE 8000 8443
-VOLUME /etc/nginx /var/log/nginx /certs
+VOLUME /conf /var/log/nginx /certs /static
 ENV ACME_STATE_DIR=/certs/acmetool
 COPY ./requestcerts /usr/bin/requestcerts
 COPY ./reload /etc/acme/hooks/reload
 COPY ./dummy.crt /etc/ssl/dummy/dummy.crt
 COPY ./dummy.key /etc/ssl/dummy/dummy.key
-CMD ["nginx"]
+ENTRYPOINT ["nginx", "-c", "/conf/nginx.conf"]
 ''',
 
 'requestcerts': '''\
@@ -111,6 +119,43 @@ for domain in *; do
   ln -snf "acmetool/live/${domain}/privkey" "/certs/${domain}.key"
 done
 kill -HUP 1
+''',
+
+'ngxmod.sh': '''\
+#!/bin/bash
+set -e
+
+sed -i -e 's/^# deb-src/deb-src/;/partner/s/^/#/' /etc/apt/sources.list
+apt-get update
+apt-get install -y --no-install-recommends dpkg-dev git
+
+mkdir /var/src
+cd /var/src
+apt-get source nginx
+apt-get build-dep nginx -y
+git clone --recursive https://github.com/google/ngx_brotli.git
+# simplified version of: https://github.com/google/ngx_brotli/pull/98
+patch ngx_brotli/static/ngx_http_brotli_static_module.c <<EOF
+@@ -170,3 +170,2 @@
+     /* NGX_HTTP_BROTLI_STATIC_ON */
+-    req->gzip_vary = 1;
+     rc = check_eligility(req);
+@@ -266,2 +265,3 @@
+   req->headers_out.content_encoding = content_encoding_entry;
++  req->gzip_vary = 1;
+
+EOF
+cd nginx-*/
+
+# args copied and trimmed from nginx binary in ubuntu
+./configure \
+  --with-cc-opt='-g -O2 -fstack-protector-strong -Wformat -Werror=format-security -fPIC -Wdate-time -D_FORTIFY_SOURCE=2' \
+  --with-ld-opt='-Wl,-Bsymbolic-functions -Wl,-z,relro -Wl,-z,now -fPIC' \
+  --with-compat \
+  --add-dynamic-module=../ngx_brotli
+
+make -f objs/Makefile objs/ngx_http_brotli_static_module.so
+install -m644 objs/ngx_http_brotli_static_module.so /
 ''',
 
 # We want to set a default server for nginx so that requests without a host get
@@ -271,10 +316,13 @@ def gen_nginx_config(servers):
     if serve_static:
       proxy += '''
           location %(location)s {
+            gzip_vary on;
             gzip_static on;
-            # TODO: brotli_static on;
+            brotli_static on;
             alias %(alias)s;
             add_header Cache-Control "public, max-age=31536000, immutable";
+            add_header X-Content-Type-Options nosniff;
+            add_header X-Frame-Options SAMEORIGIN;
           }
       ''' % serve_static
     if ssl == FORCE_SSL:
@@ -332,6 +380,7 @@ def gen_nginx_config(servers):
   server_blocks = ''.join(make_server(*s) for s in servers)
 
   return '''
+    load_module modules/ngx_http_brotli_static_module.so;
     daemon off;
     user www-data;
     worker_processes 4;
@@ -354,9 +403,14 @@ def gen_nginx_config(servers):
       ssl_session_cache shared:SSL:5m;
       ssl_session_timeout 10m;
       add_header X-Content-Type-Options nosniff;
+      server_tokens off;
+
       sendfile on;
       tcp_nopush on;
-      server_tokens off;
+      tcp_nodelay on;
+
+      include /etc/nginx/mime.types;
+
       server {
         listen 8000;
         listen 8443 ssl;
@@ -410,9 +464,9 @@ class ServerState(object):
     try:
       self.data = json.load(open(STATE_FILE, 'r'))
       # migrations:
-      if self.data['version'] == 7:
+      if self.data['version'] == 8:
         self.replace_task('__nginx__', NGINX_TASK)
-        self.data['version'] = 8
+        self.data['version'] = 9
 
       # future migrations:
       # if self.data['version'] == ...
