@@ -4,7 +4,7 @@
 __author__ = "David Reiss <davidn@gmail.com>"
 
 import os, sys, json, socket, socketserver, threading, subprocess, time
-import tempfile, shutil, traceback, urllib.request
+import tempfile, shutil, traceback, urllib.request, random
 
 IS_ROOT = os.getuid() == 0
 
@@ -37,12 +37,14 @@ NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
 NGINX_CONFIG_VOL = 'proxy_config'
 NGINX_CERTS_VOL = 'proxy_ssl_certs'
+NGINX_STATIC_VOL = 'proxy_static'
 NGINX_TASK = {
     'name': NGINX_TASK_NAME,
     'raw_image_name': NGINX_IMAGE_NAME,
     'volumes': [
       {'id': NGINX_CONFIG_VOL, 'container': '/etc/nginx'},
       {'id': NGINX_CERTS_VOL, 'container': '/certs'},
+      {'id': NGINX_STATIC_VOL, 'container': '/static'},
       {'id': 'proxy_logs', 'container': '/var/log/nginx'},
       ],
     'exposed_ports': [
@@ -179,6 +181,11 @@ def ignore(_): pass
 def volume_path(vid):
   return os.path.join(VOL_ROOT, vid)
 
+def ensure_writable_dir(path):
+  if not os.path.isdir(path):
+    os.makedirs(path)
+    os.chmod(path, 0o1777)
+
 def cert_key_paths(domain):
   certs_path = volume_path(NGINX_CERTS_VOL)
   cert = os.path.join(certs_path, domain + '.crt')
@@ -244,7 +251,7 @@ def write_cert_key(domain, cert, key):
     with open(key_path, 'w') as f: f.write(key)
 
 def gen_nginx_config(servers):
-  def make_server(domain, backend_ip, backend_port, ssl):
+  def make_server(domain, backend_ip, backend_port, ssl, serve_static):
     sslcerts = '''
           ssl_certificate /certs/%(domain)s.crt;
           ssl_certificate_key /certs/%(domain)s.key;
@@ -261,6 +268,15 @@ def gen_nginx_config(servers):
             proxy_read_timeout 1h;
           }
     ''' % vars()
+    if serve_static:
+      proxy += '''
+          location %(location)s {
+            gzip_static on;
+            # TODO: brotli_static on;
+            alias %(alias)s;
+            add_header Cache-Control "public, max-age=31536000, immutable";
+          }
+      ''' % serve_static
     if ssl == FORCE_SSL:
       return '''
         server {
@@ -338,6 +354,8 @@ def gen_nginx_config(servers):
       ssl_session_cache shared:SSL:5m;
       ssl_session_timeout 10m;
       add_header X-Content-Type-Options nosniff;
+      sendfile on;
+      tcp_nopush on;
       server_tokens off;
       server {
         listen 8000;
@@ -435,8 +453,11 @@ class ServerHandler(socketserver.StreamRequestHandler):
       return image_in_registry(task['name'])
 
   @staticmethod
-  def construct_docker_args(task):
+  def construct_docker_args(task, runid):
     args = []
+
+    args.append('--name')
+    args.append(runid)
 
     args.append('-d')
     if 'restart_policy' in task:
@@ -452,6 +473,12 @@ class ServerHandler(socketserver.StreamRequestHandler):
       args.append('-v')
       host = volume_path(vol['id'])
       args.append('%s:%s' % (host, vol['container']))
+
+    if 'serve_static' in task:
+      args.append('-v')
+      loc = os.path.join(volume_path(NGINX_STATIC_VOL), runid)
+      ensure_writable_dir(loc)
+      args.append('%s:%s' % (loc, task['serve_static']['dir']))
 
     for port in task.get('exposed_ports', []):
       host = port['host']
@@ -478,10 +505,7 @@ class ServerHandler(socketserver.StreamRequestHandler):
   @staticmethod
   def ensure_host_volumes(task):
     for vol in task.get('volumes', []):
-      path = volume_path(vol['id'])
-      if not os.path.isdir(path):
-        os.makedirs(path)
-        os.chmod(path, 0o1777)
+      ensure_writable_dir(volume_path(vol['id']))
 
   @staticmethod
   def reconfigure_proxy(st):
@@ -502,7 +526,13 @@ class ServerHandler(socketserver.StreamRequestHandler):
         else:
           ssl = bool(task.get('ssl_cert') and
               os.path.exists(cert_path) and os.path.exists(key_path))
-        servers.append((domain, ip, port, ssl))
+        serve_static = None
+        if 'serve_static' in task:
+          serve_static = {
+              'location': task['serve_static']['url'],
+              'alias': os.path.join('/static', tdata['runid']),
+              }
+        servers.append((domain, ip, port, ssl, serve_static))
     cfg = gen_nginx_config(servers)
 
     fn = os.path.join(volume_path(NGINX_CONFIG_VOL), 'nginx.conf')
@@ -609,18 +639,21 @@ class ServerHandler(socketserver.StreamRequestHandler):
       except DockerError: pass
 
     # run new thing
-    args = self.construct_docker_args(task)
-    new_cid = tdata['cid'] = docker('run', *args).strip()
+    runid = '%s-%x-%x' % (task['name'], int(time.time()), random.getrandbits(32))
+    runid = runid.strip('_')
+    args = self.construct_docker_args(task, runid)
+    new_cid = docker('run', *args).strip()
 
     if 'health_check' in task and 'http_port' in task:
       if not self.health_check(task, new_cid):
-        # failed health check, roll back
-        log("failed health check")
+        log("failed health check, rolling back")
         docker('stop', new_cid)
-        tdata['cid'] = old_cid
         return
     else:
       time.sleep(task.get('up_wait_time', 1))
+
+    # update task in state
+    tdata.update(cid=new_cid, runid=runid)
 
     # point nginx to new thing
     if 'domain' in task:

@@ -49,7 +49,7 @@ $ cat myapp.orq
   "ssl_key": "path/to/my.key",
   "force_ssl": true
 }]
-$ ./orq run myapp.orq
+$ ./orq run
 ```
 
 The `run` command will do the following:
@@ -103,11 +103,19 @@ keys:
 - `force_ssl`: If true, add a 301 redirect in nginx from http to https for this
   domain. Otherwise send all traffic to the service.
 - `use_acme`: Request a certificate for this domain with acmetool.
+- `health_check`: Path to fetch over http as a health check.
+- `serve_static`: Allows some of an application to be served by nginx directly.
+  This should be an object with two keys: `url` is the url prefix to be handled,
+  and `dir` is the mount point within the application container.
 
-Don't use this:
+Don't use these:
 
 - `exposed_ports`: Expose public ports. The intention is for nginx to be the
   only public port, and everything else to be proxied through there.
+- `restart_policy`: Sets docker restart policy. orq assumes application
+  containers will die on failure and that it will restart new ones. If you use
+  this, orq will get confused and fail to direct traffic to your application
+  (because it won't know when the IP changes).
 
 
 Volumes
@@ -145,18 +153,63 @@ webroot challenge directory, and say no to the cron job. Then you can run a
 service with `'use_acme': True`.
 
 
+Health checks
+=============
+
+Example:
+
+```
+    "health_check": "/_healthy",
+```
+
+If this is present, orq will try to fetch that path over the usual http port
+once a second after starting a new container, and will not redirect traffic to
+it until it returns http 200. It will give up after 30 seconds.
+
+Currently, health checks are not done after container startup. (That is, it's
+more like a "readiness check" for now.)
+
+
+Static files
+============
+
+To serve static files directly:
+
+```
+    "serve_static": {
+      "url": "/_st",
+      "dir": "/static"
+    },
+```
+
+This will configure nginx to serve paths like `/_st/myfile` directly out of the
+directory mounted at `/static` in your container. This will be a fresh bind
+mount that will cover any existing directory in your docker image. You should
+*copy* all the static files you want to serve into the directory. If you've
+configured a health check, make sure you copy them before the health check
+returns success.
+
+**Note:** Files will be served with this header for best caching:
+
+```
+Cache-Control: public, max-age=31536000, immutable
+```
+
+That means you *must* do your own cache-busting in the file path!
+
+
 CLI
 ===
 
-`orq run myapp.orq` runs all tasks in the file as described above.
+`orq run` runs all tasks in the .orq file in the current directory.
 
-`orq run myapp.orq foo bar` runs tasks that contain the strings `foo` or `bar` in their names.
+`orq run foo bar` runs tasks that contain the strings `foo` or `bar` in their names.
 
-`orq stop myapp.orq` stops all tasks in the file.
+`orq stop` stops all tasks in the .orq file in the current directory.
 
-`orq stop myapp.orq foo bar` stops tasks that contain the strings `foo` or `bar` in their names.
+`orq stop foo bar` stops tasks that contain the strings `foo` or `bar` in their names.
 
-`orq upload_cert myapp.orq` copies the ssl cert (and optionally key) to the
+`orq upload_cert` copies the ssl cert (and optionally key) to the
 server for inclusion in the nginx config. If the key is readable, push the cert
 and key. Otherwise push only the cert. This is the only command that touches the
 cert and key files, so you're free to leave them encrypted during normal
@@ -175,6 +228,7 @@ Pros:
 - All image-building happens locally and images get pushed to servers. If it
   works locally, it'll work on the server.
 - All communication is over ssh.
+- Health checks.
 - Zero-downtime deploys.
 - Container logs are automatically saved to a volume on crash/restart.
 
