@@ -239,9 +239,9 @@ def print_json(out):
 
 def write_cert_key(domain, cert, key):
   cert_path, key_path = cert_key_paths(domain)
-  open(cert_path, 'w').write(cert)
+  with open(cert_path, 'w') as f: f.write(cert)
   if key:
-    open(key_path, 'w').write(key)
+    with open(key_path, 'w') as f: f.write(key)
 
 def gen_nginx_config(servers):
   def make_server(domain, backend_ip, backend_port, ssl):
@@ -406,7 +406,8 @@ class ServerState(object):
     return self
 
   def save(self):
-    json.dump(self.data, open(STATE_FILE + '.tmp', 'w'))
+    with open(STATE_FILE + '.tmp', 'w') as f:
+      json.dump(self.data, f)
     os.rename(STATE_FILE + '.tmp', STATE_FILE)
 
   def __exit__(self, t, v, t2):
@@ -505,8 +506,10 @@ class ServerHandler(socketserver.StreamRequestHandler):
     cfg = gen_nginx_config(servers)
 
     fn = os.path.join(volume_path(NGINX_CONFIG_VOL), 'nginx.conf')
-    open(fn, 'w').write(cfg)
-    os.chmod(fn, 0o644)
+    with open(fn+'.next', 'w') as f:
+      f.write(cfg)
+    os.chmod(fn+'.next', 0o644)
+    os.rename(fn+'.next', fn)
 
     ServerHandler.hup_nginx(st, acme_domains)
 
@@ -670,7 +673,7 @@ def build_local_image(sources, name):
   tmpdir = tempfile.mkdtemp()
   os.chdir(tmpdir)
   for k, v in sources.items():
-    open(k, 'w').write(v)
+    with open(k, 'w') as f: f.write(v)
     if v.startswith('#!'):
       os.chmod(k, 0o755)
   docker('build', '-t', name, '.')
