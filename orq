@@ -31,7 +31,7 @@ USE_ACME = 'USE_ACME'
 # Change this when changing any of:
 # - nginx Dockerfile
 # - default task structs
-VERSION = 10
+VERSION = 11
 
 NGINX_TASK_NAME = '__nginx__'
 NGINX_IMAGE_NAME = 'orq_nginx_%d' % VERSION
@@ -76,7 +76,7 @@ NGINX_IMAGE_SOURCES = {
 
 'Dockerfile': '''
 FROM ubuntu:20.04 as base
-ARG date=2021-04-11
+ARG date=2024-07-12
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y update && apt-get -y upgrade && \
   apt-get -y install nginx acmetool ca-certificates
@@ -587,7 +587,10 @@ class ServerHandler(socketserver.StreamRequestHandler):
       domain = task.get('domain')
       port = task.get('http_port')
       if domain and port:
-        ip = ipaddr_of(tdata['cid'])
+        try:
+          ip = ipaddr_of(tdata['cid'])
+        except InspectError:
+          ip = 'missing-container'
         cert_path, key_path = cert_key_paths(domain)
         if task.get('force_ssl'):
           ssl = FORCE_SSL
@@ -638,17 +641,20 @@ class ServerHandler(socketserver.StreamRequestHandler):
   def op_check_running(self, data):
     with ServerState() as st:
       for task in st.data['tasks']:
-        cid = task['cid']
-        if cid:
-          try:
-            if inspect(cid, 'State', 'Running'):
-              continue
-          except InspectError:
-            pass
-          # old container probably crashed
-          capture_logs(task['task']['name'], cid)
-        self.run_task(st, task['task'])
-        st.save()
+        try:
+          cid = task['cid']
+          if cid:
+            try:
+              if inspect(cid, 'State', 'Running'):
+                continue
+            except InspectError:
+              pass
+            # old container probably crashed
+            capture_logs(task['task']['name'], cid)
+          self.run_task(st, task['task'])
+          st.save()
+        except:
+          pass
       if data.get('reconcile'):
         ServerHandler.hup_nginx(st, force_reconcile=True)
 
