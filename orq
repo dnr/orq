@@ -4,7 +4,7 @@
 __author__ = "David Reiss <davidn@gmail.com>"
 
 import os, sys, json, socket, socketserver, threading, subprocess, time
-import tempfile, shutil, traceback, urllib.request, random
+import tempfile, shutil, traceback, urllib.request, random, re
 
 IS_ROOT = os.getuid() == 0
 
@@ -905,7 +905,16 @@ class Cli(object):
       orqfile = Cli.find_orqfile()
     dir, base = os.path.split(os.path.abspath(orqfile))
     os.chdir(dir)
-    tasks = json.load(open(base))
+    with open(base) as f:
+      data = f.read()
+    def env_sub(m):
+      v = os.getenv(m.group(1))
+      if v is None:
+        raise Exception(f"env var {m.group(1)} not found")
+      json.loads(v)  # check syntax
+      return v
+    data = re.sub(r'\^\^\^(\w+)', env_sub, data)
+    tasks = json.loads(data)
     if len(argv) > 0:
       tasks = list(filter(Cli.task_matcher(argv), tasks))
     return tasks
