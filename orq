@@ -567,6 +567,13 @@ class ServerHandler(socketserver.StreamRequestHandler):
       args.append('-e')
       args.append('%s=%s' % (k, v))
 
+    if 'syslog' in task:
+      args.append('--log-driver')
+      args.append('syslog')
+      for k, v in task['syslog'].items():
+        args.append('--log-opt')
+        args.append('%s=%s' % (k, v))
+
     args.append(ServerHandler.get_image_name(task))
 
     args.extend(task.get('argv', []))
